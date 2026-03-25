@@ -102,16 +102,20 @@ class TermMon:
             swap_total_mb = swap_total / 1024
             swap_used_mb = swap_used / 1024
             
-            # Overall CPU
+            # Overall CPU - parse /proc/stat
+            # Format: cpu <user> <nice> <system> <idle> <iowait> <irq> <softirq> <steal> <guest> <guest_nice>
+            # Fields:  [0]   [1]    [2]      [3]       [4]      [5]     [6]       [7]      [8]       [9]        [10]
             with open('/proc/stat', 'r') as f:
                 lines = f.readlines()
             
-            # Parse overall CPU
+            # Parse overall CPU (first line)
             cpu_line = lines[0]
-            cpu_values = [int(v) for v in cpu_line.split()[1:12]]
-            idle = cpu_values[3] + cpu_values[4]
+            cpu_values = [int(v) for v in cpu_line.split()[1:12]]  # Skip 'cpu' label, take 11 fields
+            idle = cpu_values[3] + cpu_values[4]  # idle + iowait
             total = sum(cpu_values)
             
+            # Calculate CPU usage using delta (difference from last sample)
+            # This gives real-time usage, not cumulative since boot
             cpu_usage = 0.0
             if self.last_cpu_stats is not None:
                 prev_idle, prev_total = self.last_cpu_stats
@@ -123,16 +127,18 @@ class TermMon:
             self.last_cpu_stats = (idle, total)
             
             # Parse per-core stats (cpu0, cpu1, cpu2, ...)
+            # Each line has same format as overall CPU line
             per_core_usage = []
             for line in lines[1:]:
                 if line.startswith('cpu'):
                     parts = line.split()
-                    if len(parts) >= 11:  # Fixed: was >= 12
+                    if len(parts) >= 11:  # Need core name + 10 stat fields
                         core_id = int(parts[0][3:])  # Extract number from 'cpu0', 'cpu1', etc.
-                        core_values = [int(v) for v in parts[1:11]]  # Fixed: was [1:12]
-                        core_idle = core_values[3] + core_values[4]
+                        core_values = [int(v) for v in parts[1:11]]  # Take 10 stat fields
+                        core_idle = core_values[3] + core_values[4]  # idle + iowait
                         core_total = sum(core_values)
                         
+                        # Calculate per-core usage using delta
                         core_usage = 0.0
                         if core_id in self.last_per_core_stats:
                             prev_idle, prev_total = self.last_per_core_stats[core_id]
