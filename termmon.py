@@ -15,6 +15,7 @@ class TermMon:
         self.gpu_data = []
         self.system_data = {}
         self.last_cpu_stats = None
+        self.last_per_core_stats = {}  # {core_id: (idle, total)}
         
     def get_system_stats(self):
         """Read system memory and CPU stats"""
@@ -39,9 +40,12 @@ class TermMon:
             swap_total_mb = swap_total / 1024
             swap_used_mb = swap_used / 1024
             
+            # Overall CPU
             with open('/proc/stat', 'r') as f:
-                cpu_line = f.readline()
+                lines = f.readlines()
             
+            # Parse overall CPU
+            cpu_line = lines[0]
             cpu_values = [int(v) for v in cpu_line.split()[1:12]]
             idle = cpu_values[3] + cpu_values[4]
             total = sum(cpu_values)
@@ -55,6 +59,31 @@ class TermMon:
                     cpu_usage = (1 - idle_delta / total_delta) * 100
             
             self.last_cpu_stats = (idle, total)
+            
+            # Parse per-core stats (cpu0, cpu1, cpu2, ...)
+            per_core_usage = []
+            for line in lines[1:]:
+                if line.startswith('cpu'):
+                    parts = line.split()
+                    if len(parts) >= 12:
+                        core_id = int(parts[0][3:])  # Extract number from 'cpu0', 'cpu1', etc.
+                        core_values = [int(v) for v in parts[1:12]]
+                        core_idle = core_values[3] + core_values[4]
+                        core_total = sum(core_values)
+                        
+                        core_usage = 0.0
+                        if core_id in self.last_per_core_stats:
+                            prev_idle, prev_total = self.last_per_core_stats[core_id]
+                            idle_delta = core_idle - prev_idle
+                            total_delta = core_total - prev_total
+                            if total_delta > 0:
+                                core_usage = (1 - idle_delta / total_delta) * 100
+                        
+                        self.last_per_core_stats[core_id] = (core_idle, core_total)
+                        per_core_usage.append((core_id, core_usage))
+            
+            # Sort by core ID
+            per_core_usage.sort(key=lambda x: x[0])
             
             with open('/proc/cpuinfo', 'r') as f:
                 core_count = len([l for l in f.read().split('\n') if l.startswith('processor')])
@@ -71,7 +100,8 @@ class TermMon:
                 'swap_used_mb': swap_used_mb,
                 'swap_percent': swap_percent,
                 'cpu_usage': cpu_usage,
-                'core_count': core_count
+                'core_count': core_count,
+                'per_core_usage': per_core_usage
             }
         except Exception as e:
             self.system_data['error'] = str(e)
@@ -149,7 +179,7 @@ class TermMon:
         
         BOX_WIDTH = 80
         BAR_WIDTH = 20
-        LABEL_WIDTH = 22  # Fixed width for labels
+        LABEL_WIDTH = 22
         
         stdscr.erase()
         
@@ -216,7 +246,7 @@ class TermMon:
         except curses.error:
             pass
         
-        # CPU
+        # CPU - Overall + Per-Core
         try:
             stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
             y += 1
@@ -225,12 +255,22 @@ class TermMon:
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
             
+            # Overall CPU
             cpu_pct = self.system_data.get('cpu_usage', 0)
-            label = "│ Usage:".ljust(8) + f"{cpu_pct:6.1f}%".rjust(LABEL_WIDTH - 8)
+            label = "│ Overall:".ljust(8) + f"{cpu_pct:6.1f}%".rjust(LABEL_WIDTH - 8)
             stdscr.addstr(y, x, label)
             self.draw_bar(stdscr, y, x + LABEL_WIDTH, cpu_pct, BAR_WIDTH, 4)
             stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
             y += 1
+            
+            # Per-core usage
+            per_core = self.system_data.get('per_core_usage', [])
+            for core_id, core_pct in per_core:
+                label = f"│ Core {core_id}:".ljust(8) + f"{core_pct:6.1f}%".rjust(LABEL_WIDTH - 8)
+                stdscr.addstr(y, x, label)
+                self.draw_bar(stdscr, y, x + LABEL_WIDTH, core_pct, BAR_WIDTH, 4)
+                stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                y += 1
             
             stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
             y += 2
