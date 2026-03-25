@@ -44,11 +44,19 @@ __version__ = "1.0.0"
 __author__ = "Ifor Evans"
 
 
-# Configuration constants
+# Layout configuration
 BOX_WIDTH = 80          # Width of each section box
 BAR_WIDTH = 20          # Width of progress bars
 LABEL_WIDTH = 22        # Width of label column
 REFRESH_INTERVAL = 2    # Seconds between auto-refreshes
+
+# Color pair IDs
+COLOR_TITLE = 1         # White - title and footer
+COLOR_MEMORY = 2        # Green - RAM usage bar
+COLOR_SWAP = 3          # Yellow - swap usage bar
+COLOR_CPU = 4           # Cyan - CPU usage bar
+COLOR_VRAM = 5          # Magenta - VRAM usage bar
+COLOR_ERROR = 6         # Red - error messages
 
 
 class TermMon:
@@ -285,7 +293,7 @@ class TermMon:
             used_gb = self.system_data.get('used_mem_gb', 0)
             label = "│ Used:".ljust(8) + f"{used_gb:6.1f}GB".rjust(LABEL_WIDTH - 8)
             stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, 2)
+            self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, COLOR_MEMORY)
             pct_str = f" {mem_pct:5.1f}%"
             remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
             stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
@@ -303,7 +311,7 @@ class TermMon:
             swap_total_gb = self.system_data.get('swap_total_mb', 0) / 1024
             label = "│ Swap:".ljust(8) + f"{swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB".rjust(LABEL_WIDTH - 8)
             stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + LABEL_WIDTH, swap_pct, BAR_WIDTH, 3)
+            self.draw_bar(stdscr, y, x + LABEL_WIDTH, swap_pct, BAR_WIDTH, COLOR_SWAP)
             pct_str = f" {swap_pct:5.1f}%"
             remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
             stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
@@ -328,7 +336,7 @@ class TermMon:
             cpu_pct = self.system_data.get('cpu_usage', 0)
             label = f"│ Overall:".ljust(12) + f"{cpu_pct:6.1f}%".rjust(LABEL_WIDTH - 12)
             stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + LABEL_WIDTH, cpu_pct, BAR_WIDTH, 4)
+            self.draw_bar(stdscr, y, x + LABEL_WIDTH, cpu_pct, BAR_WIDTH, COLOR_CPU)
             stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
             y += 1
             
@@ -340,7 +348,7 @@ class TermMon:
                 label = f"│ Core {core_id}:".ljust(11) + f"{core_pct:6.1f}%".rjust(LABEL_WIDTH - 11)
                 try:
                     stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, core_pct, BAR_WIDTH, 4)
+                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, core_pct, BAR_WIDTH, COLOR_CPU)
                     stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
                 except curses.error:
                     pass  # Skip if can't draw
@@ -375,7 +383,7 @@ class TermMon:
                     # VRAM
                     label = "│ VRAM:".ljust(8) + f"{gpu['mem_used']:5.0f}/{gpu['mem_total']:5.0f}MB".rjust(LABEL_WIDTH - 8)
                     stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, 5)
+                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, COLOR_VRAM)
                     pct_str = f" {mem_pct:5.1f}%"
                     remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
                     stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
@@ -385,7 +393,7 @@ class TermMon:
                     # Util
                     label = "│ Util:".ljust(8) + f"{gpu['gpu_util']:6.1f}%".rjust(LABEL_WIDTH - 8)
                     stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, gpu['gpu_util'], BAR_WIDTH, 4)
+                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
                     stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
                     y += 1
                     
@@ -429,12 +437,12 @@ class TermMon:
         
         curses.start_color()
         curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_WHITE, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_CYAN, -1)
-        curses.init_pair(5, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(6, curses.COLOR_RED, -1)
+        curses.init_pair(COLOR_TITLE, curses.COLOR_WHITE, -1)
+        curses.init_pair(COLOR_MEMORY, curses.COLOR_GREEN, -1)
+        curses.init_pair(COLOR_SWAP, curses.COLOR_YELLOW, -1)
+        curses.init_pair(COLOR_CPU, curses.COLOR_CYAN, -1)
+        curses.init_pair(COLOR_VRAM, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(COLOR_ERROR, curses.COLOR_RED, -1)
         
         curses.cbreak()
         stdscr.keypad(True)
