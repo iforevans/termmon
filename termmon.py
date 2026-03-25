@@ -257,7 +257,7 @@ class TermMon:
             
             # Overall CPU
             cpu_pct = self.system_data.get('cpu_usage', 0)
-            label = "│ Overall:".ljust(8) + f"{cpu_pct:5.1f}%".rjust(LABEL_WIDTH - 8)
+            label = f"│ Overall:".ljust(12) + f"{cpu_pct:6.1f}%".rjust(LABEL_WIDTH - 12)
             stdscr.addstr(y, x, label)
             self.draw_bar(stdscr, y, x + LABEL_WIDTH, cpu_pct, BAR_WIDTH, 4)
             stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
