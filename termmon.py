@@ -65,9 +65,9 @@ class TermMon:
             for line in lines[1:]:
                 if line.startswith('cpu'):
                     parts = line.split()
-                    if len(parts) >= 12:
+                    if len(parts) >= 11:  # Fixed: was >= 12
                         core_id = int(parts[0][3:])  # Extract number from 'cpu0', 'cpu1', etc.
-                        core_values = [int(v) for v in parts[1:12]]
+                        core_values = [int(v) for v in parts[1:11]]  # Fixed: was [1:12]
                         core_idle = core_values[3] + core_values[4]
                         core_total = sum(core_values)
                         
@@ -207,7 +207,7 @@ class TermMon:
             y += 1
             
             # Total
-            line = f"│ Total:    {self.system_data.get('total_mem_gb', 0):6.1f} GB"
+            line = f"│ Total:       {self.system_data.get('total_mem_gb', 0):5.1f}GB"
             stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
             y += 1
             
@@ -224,15 +224,15 @@ class TermMon:
             y += 1
             
             # Available
-            line = f"│ Available: {self.system_data.get('avail_mem_gb', 0):6.1f} GB"
+            line = f"│ Available:  {self.system_data.get('avail_mem_gb', 0):6.1f}GB"
             stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
             y += 1
             
             # Swap with bar and %
             swap_pct = self.system_data.get('swap_percent', 0)
-            swap_used = self.system_data.get('swap_used_mb', 0)
-            swap_total = self.system_data.get('swap_total_mb', 0)
-            label = "│ Swap:".ljust(8) + f"{swap_used:6.1f}/{swap_total:6.1f}MB".rjust(LABEL_WIDTH - 8)
+            swap_used_gb = self.system_data.get('swap_used_mb', 0) / 1024
+            swap_total_gb = self.system_data.get('swap_total_mb', 0) / 1024
+            label = "│ Swap:".ljust(8) + f"{swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB".rjust(LABEL_WIDTH - 8)
             stdscr.addstr(y, x, label)
             self.draw_bar(stdscr, y, x + LABEL_WIDTH, swap_pct, BAR_WIDTH, 3)
             pct_str = f" {swap_pct:5.1f}%"
@@ -257,7 +257,7 @@ class TermMon:
             
             # Overall CPU
             cpu_pct = self.system_data.get('cpu_usage', 0)
-            label = "│ Overall:".ljust(8) + f"{cpu_pct:6.1f}%".rjust(LABEL_WIDTH - 8)
+            label = "│ Overall:".ljust(8) + f"{cpu_pct:5.1f}%".rjust(LABEL_WIDTH - 8)
             stdscr.addstr(y, x, label)
             self.draw_bar(stdscr, y, x + LABEL_WIDTH, cpu_pct, BAR_WIDTH, 4)
             stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
@@ -266,10 +266,15 @@ class TermMon:
             # Per-core usage
             per_core = self.system_data.get('per_core_usage', [])
             for core_id, core_pct in per_core:
-                label = f"│ Core {core_id}:".ljust(8) + f"{core_pct:6.1f}%".rjust(LABEL_WIDTH - 8)
-                stdscr.addstr(y, x, label)
-                self.draw_bar(stdscr, y, x + LABEL_WIDTH, core_pct, BAR_WIDTH, 4)
-                stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                if y >= height - 3:
+                    break  # Don't draw off-screen
+                label = f"│ Core {core_id}:".ljust(11) + f"{core_pct:6.1f}%".rjust(LABEL_WIDTH - 11)
+                try:
+                    stdscr.addstr(y, x, label)
+                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, core_pct, BAR_WIDTH, 4)
+                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                except curses.error:
+                    pass  # Skip if can't draw
                 y += 1
             
             stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
@@ -299,7 +304,7 @@ class TermMon:
                     y += 1
                     
                     # VRAM
-                    label = "│ VRAM:".ljust(8) + f"{gpu['mem_used']:7.0f}/{gpu['mem_total']:7.0f}MB".rjust(LABEL_WIDTH - 8)
+                    label = "│ VRAM:".ljust(8) + f"{gpu['mem_used']:5.0f}/{gpu['mem_total']:5.0f}MB".rjust(LABEL_WIDTH - 8)
                     stdscr.addstr(y, x, label)
                     self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, 5)
                     pct_str = f" {mem_pct:5.1f}%"
