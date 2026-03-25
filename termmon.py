@@ -323,6 +323,60 @@ class TermMon:
         
         return y
     
+    def _draw_cpu_section(self, stdscr, y: int, x: int, height: int) -> int:
+        """
+        Draw the CPU monitoring section (overall + per-core).
+        
+        Args:
+            stdscr: Curses window
+            y: Starting row position
+            x: Column position
+            height: Terminal height (for bounds checking)
+            
+        Returns:
+            Next y position after the section
+        """
+        try:
+            # Box header
+            core_count = self.system_data.get('core_count', 0)
+            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
+            y += 1
+            stdscr.addstr(y, x, f"│ CPU ({core_count} cores)".ljust(BOX_WIDTH - 1) + "│")
+            y += 1
+            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+            y += 1
+            
+            # Overall CPU usage
+            cpu_pct = self.system_data.get('cpu_usage', 0)
+            label = f"│ Overall:".ljust(12) + f"{cpu_pct:6.1f}%".rjust(LABEL_WIDTH - 12)
+            stdscr.addstr(y, x, label)
+            self.draw_bar(stdscr, y, x + LABEL_WIDTH, cpu_pct, BAR_WIDTH, COLOR_CPU)
+            stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+            y += 1
+            
+            # Per-core usage
+            per_core = self.system_data.get('per_core_usage', [])
+            for core_id, core_pct in per_core:
+                if y >= height - 3:
+                    break  # Don't draw off-screen
+                
+                label = f"│ Core {core_id}:".ljust(11) + f"{core_pct:6.1f}%".rjust(LABEL_WIDTH - 11)
+                try:
+                    stdscr.addstr(y, x, label)
+                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, core_pct, BAR_WIDTH, COLOR_CPU)
+                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                except curses.error:
+                    pass  # Skip if can't draw
+                y += 1
+            
+            # Box footer
+            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
+            y += 2
+        except curses.error:
+            pass
+        
+        return y
+    
     def draw(self, stdscr) -> None:
         """Draw the complete UI with all monitoring sections."""
         curses.curs_set(0)
@@ -348,41 +402,8 @@ class TermMon:
         # Draw system memory section
         y = self._draw_memory_section(stdscr, y, x)
         
-        # CPU - Overall + Per-Core
-        try:
-            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
-            y += 1
-            stdscr.addstr(y, x, f"│ CPU ({self.system_data.get('core_count', 0)} cores)".ljust(BOX_WIDTH - 1) + "│")
-            y += 1
-            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
-            y += 1
-            
-            # Overall CPU
-            cpu_pct = self.system_data.get('cpu_usage', 0)
-            label = f"│ Overall:".ljust(12) + f"{cpu_pct:6.1f}%".rjust(LABEL_WIDTH - 12)
-            stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + LABEL_WIDTH, cpu_pct, BAR_WIDTH, COLOR_CPU)
-            stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-            y += 1
-            
-            # Per-core usage
-            per_core = self.system_data.get('per_core_usage', [])
-            for core_id, core_pct in per_core:
-                if y >= height - 3:
-                    break  # Don't draw off-screen
-                label = f"│ Core {core_id}:".ljust(11) + f"{core_pct:6.1f}%".rjust(LABEL_WIDTH - 11)
-                try:
-                    stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, core_pct, BAR_WIDTH, COLOR_CPU)
-                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-                except curses.error:
-                    pass  # Skip if can't draw
-                y += 1
-            
-            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
-            y += 2
-        except curses.error:
-            pass
+        # Draw CPU section
+        y = self._draw_cpu_section(stdscr, y, x, height)
         
         # GPU
         try:
