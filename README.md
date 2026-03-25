@@ -1,8 +1,10 @@
-# termmon
+# termmon v1.0.0
 
 While testing local models on my RTX3090/24GB I constantly found myself with a terminal window open for htop and another to keep refreshing 'nvidia-smi' to see VRAM usage. This is a solution to that problem. Monitor CPU/System RAM/SWP, and GPU/VRAM usage from one little htop clone.
 
 A terminal-based system monitor combining `htop` and `nvidia-smi` into a single unified dashboard.
+
+**Version:** 1.0.0 (stable, production-ready)
 
 ## Features
 
