@@ -1,24 +1,75 @@
 #!/usr/bin/env python3
 """
-termmon - Terminal system monitor (htop + nvidia-smi in one)
-Pure Python, no external dependencies
+termmon - Terminal System Monitor
+==================================
+
+A unified terminal-based system monitor combining `htop` (system RAM/CPU) 
+and `nvidia-smi` (GPU/VRAM) functionality into a single dashboard.
+
+Originally created to solve the problem of monitoring CPU/system RAM/swap 
+and GPU/VRAM usage from one window while testing local AI models on an 
+RTX3090/24GB.
+
+Features:
+    - System memory monitoring (RAM + swap in GB)
+    - Overall and per-core CPU utilization
+    - NVIDIA GPU monitoring (VRAM, utilization, temperature, power)
+    - Color-coded progress bars
+    - Auto-refresh every 2 seconds
+    - Pure Python with no external dependencies
+
+Usage:
+    termmon
+
+Keybindings:
+    q - Quit
+    r - Refresh now
+    h - Show help
+
+Author:
+    Ifor Evans (@iforevans)
+    Pair programmed with OpenClaw Agent Sparky ⚡
+
+License:
+    MIT
 """
 
 import curses
 import subprocess
 from datetime import datetime
 import time
+from typing import Dict, List, Tuple, Any, Optional
+
+__version__ = "1.0.0"
+__author__ = "Ifor Evans"
+
+
+# Configuration constants
+BOX_WIDTH = 80          # Width of each section box
+BAR_WIDTH = 20          # Width of progress bars
+LABEL_WIDTH = 22        # Width of label column
+REFRESH_INTERVAL = 2    # Seconds between auto-refreshes
+
 
 class TermMon:
-    def __init__(self):
-        self.running = True
-        self.gpu_data = []
-        self.system_data = {}
-        self.last_cpu_stats = None
-        self.last_per_core_stats = {}  # {core_id: (idle, total)}
+    """Terminal-based system monitor combining htop and nvidia-smi."""
+    
+    def __init__(self) -> None:
+        """Initialize the TermMon application."""
+        self.running: bool = True
+        self.gpu_data: List[Dict[str, Any]] = []
+        self.system_data: Dict[str, Any] = {}
+        self.last_cpu_stats: Optional[Tuple[int, int]] = None
+        self.last_per_core_stats: Dict[int, Tuple[int, int]] = {}
         
-    def get_system_stats(self):
-        """Read system memory and CPU stats"""
+    def get_system_stats(self) -> None:
+        """
+        Read system memory and CPU statistics from /proc filesystem.
+        
+        Parses /proc/meminfo for memory/swap statistics and /proc/stat for
+        CPU utilization. Calculates CPU usage using delta between samples
+        for accurate real-time measurement (not cumulative from boot).
+        """
         try:
             with open('/proc/meminfo', 'r') as f:
                 meminfo = {}
@@ -106,8 +157,13 @@ class TermMon:
         except Exception as e:
             self.system_data['error'] = str(e)
     
-    def get_gpu_stats(self):
-        """Read NVIDIA GPU stats"""
+    def get_gpu_stats(self) -> None:
+        """
+        Read NVIDIA GPU statistics using nvidia-smi.
+        
+        Queries GPU index, name, memory (total/used/free), utilization,
+        temperature, and power draw.
+        """
         try:
             result = subprocess.run(
                 [
@@ -144,13 +200,26 @@ class TermMon:
         except Exception as e:
             self.gpu_data = []
     
-    def update_stats(self):
-        """Update all stats"""
+    def update_stats(self) -> None:
+        """Update all system and GPU statistics."""
         self.get_system_stats()
         self.get_gpu_stats()
     
-    def draw_bar(self, stdscr, y, x, percent, width, color_pair):
-        """Draw a progress bar with at least 1 block if percent > 0"""
+    def draw_bar(
+            self, stdscr, y: int, x: int, percent: float, width: int, color_pair: int
+        ) -> None:
+        """
+        Draw a progress bar with filled and empty blocks.
+        
+        Args:
+            stdscr: Curses window
+            y, x: Position
+            percent: Percentage (0-100)
+            width: Number of blocks
+            color_pair: Curses color pair ID
+        
+        Note: Shows at least 1 filled block if percent > 0.
+        """
         percent = max(0, min(100, percent))
         
         if percent > 0:
@@ -171,8 +240,8 @@ class TermMon:
         except curses.error:
             pass
     
-    def draw(self, stdscr):
-        """Draw the UI with fixed-width columns"""
+    def draw(self, stdscr) -> None:
+        """Draw the complete UI with all monitoring sections."""
         curses.curs_set(0)
         
         height, width = stdscr.getmaxyx()
@@ -344,8 +413,18 @@ class TermMon:
         
         stdscr.refresh()
     
-    def run(self):
-        """Main loop"""
+    def run(self) -> None:
+        """
+        Main application loop.
+        
+        Initializes curses, sets up colors, enters main loop with
+        auto-refresh and keyboard input handling.
+        
+        Keybindings:
+            q/Q - Quit
+            r/R - Force refresh
+            h/H - Show help
+        """
         stdscr = curses.initscr()
         
         curses.start_color()
