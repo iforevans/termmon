@@ -58,6 +58,9 @@ COLOR_CPU = 4           # Cyan - CPU usage bar
 COLOR_VRAM = 5          # Magenta - VRAM usage bar
 COLOR_ERROR = 6         # Red - error messages
 
+# NVIDIA GPU query fields (must match nvidia-smi output order)
+GPU_QUERY_FIELDS = "index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw"
+
 
 class TermMon:
     """Terminal-based system monitor combining htop and nvidia-smi."""
@@ -176,7 +179,7 @@ class TermMon:
             result = subprocess.run(
                 [
                     'nvidia-smi',
-                    '--query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw',
+                    f'--query-gpu={GPU_QUERY_FIELDS}',
                     '--format=csv,noheader,nounits'
                 ],
                 capture_output=True,
