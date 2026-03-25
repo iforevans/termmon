@@ -254,10 +254,6 @@ class TermMon:
         
         height, width = stdscr.getmaxyx()
         
-        BOX_WIDTH = 80
-        BAR_WIDTH = 20
-        LABEL_WIDTH = 22
-        
         stdscr.erase()
         
         # Title
@@ -412,7 +408,7 @@ class TermMon:
         
         # Footer
         try:
-            footer = " Refresh: 2s | q:quit r:refresh h:help "
+            footer = f" Refresh: {REFRESH_INTERVAL}s | q:quit r:refresh h:help "
             stdscr.attron(curses.A_REVERSE)
             stdscr.addstr(height - 1, 0, footer[:width-1].ljust(width-1)[:width-1])
             stdscr.attroff(curses.A_REVERSE)
