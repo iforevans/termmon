@@ -1,14 +1,16 @@
 # termmon
 
+While testing local models on my RTX3090/24GB I constantly found myself with a terminal window open for htop and another to keep refreshing 'nvidia-smi' to see VRAM usage. This is a solution to that problem. Monitor CPU/System RAM/SWP, and GPU/VRAM usage from one little htop clone.
+
 A terminal-based system monitor combining `htop` and `nvidia-smi` into a single unified dashboard.
 
 ## Features
 
-- **System Memory**: Total, used, available, and swap with progress bars
-- **CPU Usage**: Real-time per-system CPU utilization with delta-based calculation
+- **System Memory**: Total, used, available, and swap (in GB) with progress bars
+- **CPU Usage**: Overall and per-core real-time utilization with delta-based calculation
 - **GPU Stats**: NVIDIA GPU monitoring (VRAM usage, GPU utilization, temperature, power draw)
 - **Auto-refresh**: Updates every 2 seconds
-- **Color-coded**: Visual progress bars with intuitive color coding
+- **Color-coded**: Visual progress bars (green=memory, yellow=swap, cyan=CPU, magenta=VRAM)
 - **No dependencies**: Pure Python + curses (no external packages required)
 
 ## Screenshot
@@ -18,21 +20,29 @@ A terminal-based system monitor combining `htop` and `nvidia-smi` into a single 
 ┌────────────────────────────────────────────────────────────────────────┐
 │ SYSTEM MEMORY                                                          │
 │────────────────────────────────────────────────────────────────────────│
-│ Total:        15.4 GB                                                   │
-│ Used:       8.8GB ████████████████████░░  57.6%                        │
-│ Available:     6.5 GB                                                   │
-│ Swap: 676.9/4096.0MB ████░░░░░░░░░░░░░░░░  16.5%                       │
+│ Total:       15.4GB                                                     │
+│ Used:        8.6GB ████████████████████░░  55.8%                        │
+│ Available:    6.8GB                                                     │
+│ Swap:       2.5/4.0GB ████░░░░░░░░░░░░░░░░  62.5%                       │
 └────────────────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────────────────┐
 │ CPU (8 cores)                                                          │
 │────────────────────────────────────────────────────────────────────────│
-│ Usage:     1.4% █░░░░░░░░░░░░░░░░░░░░░                                  │
+│ Overall:     2.4% ████░░░░░░░░░░░░░░░░░░                               │
+│ Core 0:      2.4% ████░░░░░░░░░░░░░░░░░░                               │
+│ Core 1:      0.0% ░░░░░░░░░░░░░░░░░░░░░░                               │
+│ Core 2:      4.8% ██████░░░░░░░░░░░░░░░░                               │
+│ Core 3:      0.0% ░░░░░░░░░░░░░░░░░░░░░░                               │
+│ Core 4:      2.4% ████░░░░░░░░░░░░░░░░░░                               │
+│ Core 5:      0.0% ░░░░░░░░░░░░░░░░░░░░░░                               │
+│ Core 6:      0.0% ░░░░░░░░░░░░░░░░░░░░░░                               │
+│ Core 7:      2.4% ████░░░░░░░░░░░░░░░░░░                               │
 └────────────────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────────────────┐
 │ NVIDIA GPU(s)                                                          │
 │────────────────────────────────────────────────────────────────────────│
 │ GPU 0: NVIDIA GeForce RTX 3090                                         │
-│ VRAM:  22313/24576MB ████████████████░░  90.8%                        │
+│ VRAM:    22547/24576MB ████████████████░░  91.7%                        │
 │ Util:     0.0% ░░░░░░░░░░░░░░░░░░░░░░                                  │
 │ Temp:     59°C  Power: 110.2W                                         │
 └────────────────────────────────────────────────────────────────────────┘
@@ -77,9 +87,9 @@ python3 termmon.py
 
 ## Display Format
 
-- **Memory section**: Shows total RAM, used RAM with progress bar and percentage, available RAM, and swap usage
-- **CPU section**: Shows overall CPU usage with progress bar (delta-based calculation for accurate real-time usage)
-- **GPU section**: Per-GPU display showing VRAM usage, GPU utilization, temperature, and power consumption
+- **Memory section**: Total, used, and available RAM in GB; swap in GB with progress bars and percentages
+- **CPU section**: Overall usage plus per-core breakdown with aligned progress bars
+- **GPU section**: Per-GPU VRAM usage, utilization, temperature, and power draw with color-coded bars
 
 ## How It Works
 
@@ -91,7 +101,7 @@ python3 termmon.py
 
 ## Future Enhancements
 
-- [ ] Per-core CPU visualization
+- [x] Per-core CPU visualization
 - [ ] Process list with GPU tags
 - [ ] Network I/O monitoring
 - [ ] Disk I/O monitoring
