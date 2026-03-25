@@ -257,6 +257,72 @@ class TermMon:
         except curses.error:
             pass
     
+    def _draw_memory_section(self, stdscr, y: int, x: int) -> int:
+        """
+        Draw the system memory monitoring section.
+        
+        Args:
+            stdscr: Curses window
+            y: Starting row position
+            x: Column position
+            
+        Returns:
+            Next y position after the section
+        """
+        try:
+            # Box header
+            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
+            y += 1
+            stdscr.addstr(y, x, "│ SYSTEM MEMORY".ljust(BOX_WIDTH - 1) + "│")
+            y += 1
+            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+            y += 1
+            
+            # Total memory
+            total_gb = self.system_data.get('total_mem_gb', 0)
+            line = f"│ Total:       {total_gb:5.1f}GB"
+            stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
+            y += 1
+            
+            # Used memory with bar
+            mem_pct = self.system_data.get('mem_percent', 0)
+            used_gb = self.system_data.get('used_mem_gb', 0)
+            label = "│ Used:".ljust(8) + f"{used_gb:6.1f}GB".rjust(LABEL_WIDTH - 8)
+            stdscr.addstr(y, x, label)
+            self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, COLOR_MEMORY)
+            pct_str = f" {mem_pct:5.1f}%"
+            remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
+            stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
+            stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+            y += 1
+            
+            # Available memory
+            avail_gb = self.system_data.get('avail_mem_gb', 0)
+            line = f"│ Available:  {avail_gb:6.1f}GB"
+            stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
+            y += 1
+            
+            # Swap with bar
+            swap_pct = self.system_data.get('swap_percent', 0)
+            swap_used_gb = self.system_data.get('swap_used_mb', 0) / 1024
+            swap_total_gb = self.system_data.get('swap_total_mb', 0) / 1024
+            label = "│ Swap:".ljust(8) + f"{swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB".rjust(LABEL_WIDTH - 8)
+            stdscr.addstr(y, x, label)
+            self.draw_bar(stdscr, y, x + LABEL_WIDTH, swap_pct, BAR_WIDTH, COLOR_SWAP)
+            pct_str = f" {swap_pct:5.1f}%"
+            remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
+            stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
+            stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+            y += 1
+            
+            # Box footer
+            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
+            y += 2
+        except curses.error:
+            pass
+        
+        return y
+    
     def draw(self, stdscr) -> None:
         """Draw the complete UI with all monitoring sections."""
         curses.curs_set(0)
@@ -279,54 +345,8 @@ class TermMon:
         if x < 1:
             x = 1
         
-        # System Memory
-        try:
-            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
-            y += 1
-            stdscr.addstr(y, x, "│ SYSTEM MEMORY".ljust(BOX_WIDTH - 1) + "│")
-            y += 1
-            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
-            y += 1
-            
-            # Total
-            line = f"│ Total:       {self.system_data.get('total_mem_gb', 0):5.1f}GB"
-            stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
-            y += 1
-            
-            # Used with bar and %
-            mem_pct = self.system_data.get('mem_percent', 0)
-            used_gb = self.system_data.get('used_mem_gb', 0)
-            label = "│ Used:".ljust(8) + f"{used_gb:6.1f}GB".rjust(LABEL_WIDTH - 8)
-            stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, COLOR_MEMORY)
-            pct_str = f" {mem_pct:5.1f}%"
-            remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
-            stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
-            stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-            y += 1
-            
-            # Available
-            line = f"│ Available:  {self.system_data.get('avail_mem_gb', 0):6.1f}GB"
-            stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
-            y += 1
-            
-            # Swap with bar and %
-            swap_pct = self.system_data.get('swap_percent', 0)
-            swap_used_gb = self.system_data.get('swap_used_mb', 0) / 1024
-            swap_total_gb = self.system_data.get('swap_total_mb', 0) / 1024
-            label = "│ Swap:".ljust(8) + f"{swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB".rjust(LABEL_WIDTH - 8)
-            stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + LABEL_WIDTH, swap_pct, BAR_WIDTH, COLOR_SWAP)
-            pct_str = f" {swap_pct:5.1f}%"
-            remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
-            stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
-            stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-            y += 1
-            
-            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
-            y += 2
-        except curses.error:
-            pass
+        # Draw system memory section
+        y = self._draw_memory_section(stdscr, y, x)
         
         # CPU - Overall + Per-Core
         try:
