@@ -377,6 +377,76 @@ class TermMon:
         
         return y
     
+    def _draw_gpu_section(self, stdscr, y: int, x: int, height: int) -> int:
+        """
+        Draw the NVIDIA GPU monitoring section.
+        
+        Args:
+            stdscr: Curses window
+            y: Starting row position
+            x: Column position
+            height: Terminal height (for bounds checking)
+            
+        Returns:
+            Next y position after the section
+        """
+        try:
+            # Box header
+            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
+            y += 1
+            stdscr.addstr(y, x, "│ NVIDIA GPU(s)".ljust(BOX_WIDTH - 1) + "│")
+            y += 1
+            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+            y += 1
+            
+            if not self.gpu_data:
+                line = "│ No GPUs found or nvidia-smi not available"
+                stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
+                y += 1
+            else:
+                for gpu in self.gpu_data:
+                    mem_pct = (gpu['mem_used'] / gpu['mem_total']) * 100 if gpu['mem_total'] > 0 else 0
+                    
+                    # GPU name (truncated if needed)
+                    name_line = f"│ GPU {gpu['idx']}: {gpu['name'][:32]}"
+                    stdscr.addstr(y, x, (name_line + " " * (BOX_WIDTH - len(name_line) - 1))[:BOX_WIDTH-1] + "│")
+                    y += 1
+                    
+                    # VRAM usage
+                    label = "│ VRAM:".ljust(8) + f"{gpu['mem_used']:5.0f}/{gpu['mem_total']:5.0f}MB".rjust(LABEL_WIDTH - 8)
+                    stdscr.addstr(y, x, label)
+                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, COLOR_VRAM)
+                    pct_str = f" {mem_pct:5.1f}%"
+                    remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
+                    stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
+                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                    y += 1
+                    
+                    # GPU utilization
+                    label = "│ Util:".ljust(8) + f"{gpu['gpu_util']:6.1f}%".rjust(LABEL_WIDTH - 8)
+                    stdscr.addstr(y, x, label)
+                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
+                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                    y += 1
+                    
+                    # Temperature and power
+                    temp_line = f"│ Temp: {gpu['temp']:5.0f}°C  Power: {gpu['power']:6.1f}W"
+                    stdscr.addstr(y, x, (temp_line + " " * (BOX_WIDTH - len(temp_line) - 1))[:BOX_WIDTH-1] + "│")
+                    y += 1
+                    
+                    # Separator between GPUs (if more GPUs and space available)
+                    if y < height - 3 and int(gpu['idx']) < len(self.gpu_data) - 1:
+                        stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+                        y += 1
+            
+            # Box footer
+            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
+            y += 2
+        except curses.error:
+            pass
+        
+        return y
+    
     def draw(self, stdscr) -> None:
         """Draw the complete UI with all monitoring sections."""
         curses.curs_set(0)
@@ -405,56 +475,8 @@ class TermMon:
         # Draw CPU section
         y = self._draw_cpu_section(stdscr, y, x, height)
         
-        # GPU
-        try:
-            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
-            y += 1
-            stdscr.addstr(y, x, "│ NVIDIA GPU(s)".ljust(BOX_WIDTH - 1) + "│")
-            y += 1
-            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
-            y += 1
-            
-            if not self.gpu_data:
-                line = "│ No GPUs found or nvidia-smi not available"
-                stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
-                y += 1
-            else:
-                for gpu in self.gpu_data:
-                    mem_pct = (gpu['mem_used'] / gpu['mem_total']) * 100 if gpu['mem_total'] > 0 else 0
-                    
-                    name_line = f"│ GPU {gpu['idx']}: {gpu['name'][:32]}"
-                    stdscr.addstr(y, x, (name_line + " " * (BOX_WIDTH - len(name_line) - 1))[:BOX_WIDTH-1] + "│")
-                    y += 1
-                    
-                    # VRAM
-                    label = "│ VRAM:".ljust(8) + f"{gpu['mem_used']:5.0f}/{gpu['mem_total']:5.0f}MB".rjust(LABEL_WIDTH - 8)
-                    stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, COLOR_VRAM)
-                    pct_str = f" {mem_pct:5.1f}%"
-                    remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
-                    stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
-                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-                    y += 1
-                    
-                    # Util
-                    label = "│ Util:".ljust(8) + f"{gpu['gpu_util']:6.1f}%".rjust(LABEL_WIDTH - 8)
-                    stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
-                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-                    y += 1
-                    
-                    temp_line = f"│ Temp: {gpu['temp']:5.0f}°C  Power: {gpu['power']:6.1f}W"
-                    stdscr.addstr(y, x, (temp_line + " " * (BOX_WIDTH - len(temp_line) - 1))[:BOX_WIDTH-1] + "│")
-                    y += 1
-                    
-                    if y < height - 3:
-                        stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
-                        y += 1
-            
-            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
-            y += 2
-        except curses.error:
-            pass
+        # Draw GPU section
+        y = self._draw_gpu_section(stdscr, y, x, height)
         
         # Footer
         try:
