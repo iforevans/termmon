@@ -41,7 +41,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __author__ = "Ifor Evans"
 
 
@@ -368,40 +368,36 @@ class TermMon:
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
             
-            # Total memory
-            total_gb = self.system_data.get('total_mem_gb', 0)
-            line = f"│ Total:       {total_gb:5.1f}GB"
-            stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
-            y += 1
-            
-            # Used memory with bar
+            # Memory: used/total with bar (compact single line)
             mem_pct = self.system_data.get('mem_percent', 0)
             used_gb = self.system_data.get('used_mem_gb', 0)
-            label = "│ Used:".ljust(8) + f"{used_gb:6.1f}GB".rjust(LABEL_WIDTH - 8)
+            total_gb = self.system_data.get('total_mem_gb', 0)
+            
+            # Format: "Mem:  12.5GB/15.4G████████████████░░░░  81.2%"
+            label = f"│ Mem:"
             stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, COLOR_MEMORY)
-            pct_str = f" {mem_pct:5.1f}%"
-            remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
-            stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
+            
+            # Draw the bar starting after the label
+            self.draw_bar(stdscr, y, x + 6, mem_pct, BAR_WIDTH, COLOR_MEMORY)
+            
+            # Add used/total and percentage after the bar
+            mem_info = f" {used_gb:5.1f}GB/{total_gb:4.1f}G {mem_pct:5.1f}%"
+            remaining = BOX_WIDTH - 6 - BAR_WIDTH - 1
+            stdscr.addstr(y, x + 6 + BAR_WIDTH, mem_info.ljust(remaining)[:remaining])
             stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
             y += 1
             
-            # Available memory
-            avail_gb = self.system_data.get('avail_mem_gb', 0)
-            line = f"│ Available:  {avail_gb:6.1f}GB"
-            stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
-            y += 1
-            
-            # Swap with bar
+            # Swap with bar (same compact format)
             swap_pct = self.system_data.get('swap_percent', 0)
             swap_used_gb = self.system_data.get('swap_used_mb', 0) / 1024
             swap_total_gb = self.system_data.get('swap_total_mb', 0) / 1024
-            label = "│ Swap:".ljust(8) + f"{swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB".rjust(LABEL_WIDTH - 8)
+            
+            label = "│ Swap:"
             stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + LABEL_WIDTH, swap_pct, BAR_WIDTH, COLOR_SWAP)
-            pct_str = f" {swap_pct:5.1f}%"
-            remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
-            stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
+            self.draw_bar(stdscr, y, x + 6, swap_pct, BAR_WIDTH, COLOR_SWAP)
+            
+            swap_info = f" {swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB {swap_pct:5.1f}%"
+            stdscr.addstr(y, x + 6 + BAR_WIDTH, swap_info.ljust(remaining)[:remaining])
             stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
             y += 1
             
@@ -502,20 +498,27 @@ class TermMon:
                     stdscr.addstr(y, x, (name_line + " " * (BOX_WIDTH - len(name_line) - 1))[:BOX_WIDTH-1] + "│")
                     y += 1
                     
-                    # VRAM usage
-                    label = "│ VRAM:".ljust(8) + f"{gpu['mem_used']:5.0f}/{gpu['mem_total']:5.0f}MB".rjust(LABEL_WIDTH - 8)
+                    # VRAM usage (in GB for consistency with system memory)
+                    mem_used_gb = gpu['mem_used'] / 1024
+                    mem_total_gb = gpu['mem_total'] / 1024
+                    
+                    label = "│ VRAM:"
                     stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, mem_pct, BAR_WIDTH, COLOR_VRAM)
-                    pct_str = f" {mem_pct:5.1f}%"
-                    remaining = BOX_WIDTH - LABEL_WIDTH - BAR_WIDTH - 1
-                    stdscr.addstr(y, x + LABEL_WIDTH + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
+                    self.draw_bar(stdscr, y, x + 6, mem_pct, BAR_WIDTH, COLOR_VRAM)
+                    pct_str = f" {mem_used_gb:5.1f}GB/{mem_total_gb:4.1f}G {mem_pct:5.1f}%"
+                    remaining = BOX_WIDTH - 6 - BAR_WIDTH - 1
+                    stdscr.addstr(y, x + 6 + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
                     stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
                     y += 1
                     
-                    # GPU utilization
-                    label = "│ Util:".ljust(8) + f"{gpu['gpu_util']:6.1f}%".rjust(LABEL_WIDTH - 8)
+                    # GPU utilization (align % start with VRAM numbers start)
+                    label = "│ Util:"
                     stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
+                    self.draw_bar(stdscr, y, x + 6, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
+                    # VRAM: " 38.6GB/24.0G  91.7%" - first digit at position 1
+                    # UTIL: "80.0%" - first digit at position 1 (no leading space)
+                    util_str = f"{gpu['gpu_util']:5.1f}%"
+                    stdscr.addstr(y, x + 6 + BAR_WIDTH, util_str.ljust(remaining)[:remaining])
                     stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
                     y += 1
                     

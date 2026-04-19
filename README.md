@@ -57,10 +57,8 @@ Simply run `termmon` and watch your system resources in real-time.
 ┌────────────────────────────────────────────────────────────────┐
 │ SYSTEM MEMORY                                                  │
 │────────────────────────────────────────────────────────────────│
-│ Total:       15.4GB                                             │
-│ Used:        8.6GB ████████████████████░░  55.8%               │
-│ Available:    6.8GB                                             │
-│ Swap:       2.5/4.0GB ████░░░░░░░░░░░░░░░░  62.5%              │
+│ Mem:  ████████████████████░░░░  12.5GB/15.4G  81.2%           │
+│ Swap: ██████████████████░░░░░░   2.5/4.0GB  62.5%             │
 └────────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────────┐
 │ CPU (8 cores)                                                  │
@@ -74,8 +72,8 @@ Simply run `termmon` and watch your system resources in real-time.
 │ NVIDIA GPU(s)                                                  │
 │────────────────────────────────────────────────────────────────│
 │ GPU 0: NVIDIA GeForce RTX 3090                                 │
-│ VRAM:    22547/24576MB ████████████████░░  91.7%              │
-│ Util:     0.0% ░░░░░░░░░░░░░░░░░░░░░░                         │
+│ VRAM: ████████████████░░░░   22.0GB/24.0G  91.7%              │
+│ Util: ████████████████████░░░░  80.0%                        │
 │ Temp:     59°C  Power: 110.2W                                 │
 └────────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────────┐
@@ -123,6 +121,14 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
+
+### v1.2.0 (2026-04-19)
+- **UI improvements**: Compact, consistent display format
+  - System memory: Single-line `Mem: 12.5GB/15.4G ████████  81.2%` format
+  - VRAM: Now shows GB instead of MB for consistency (`38.6GB/24.0G`)
+  - GPU utilization: Percentage aligns with VRAM numbers
+  - Removed redundant "Total" and "Available" memory lines
+  - All progress bars now start at same position for visual consistency
 
 ### v1.1.0 (2026-04-19)
 - **New**: GPU process tracking (nvtop-style)
