@@ -14,6 +14,7 @@ Features:
     - System memory monitoring (RAM + swap in GB)
     - Overall and per-core CPU utilization
     - NVIDIA GPU monitoring (VRAM, utilization, temperature, power)
+    - GPU process tracking (top 5 processes by VRAM usage)
     - Color-coded progress bars
     - Auto-refresh every 2 seconds
     - Pure Python with no external dependencies
@@ -40,7 +41,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "Ifor Evans"
 
 
@@ -57,9 +58,15 @@ COLOR_SWAP = 3          # Yellow - swap usage bar
 COLOR_CPU = 4           # Cyan - CPU usage bar
 COLOR_VRAM = 5          # Magenta - VRAM usage bar
 COLOR_ERROR = 6         # Red - error messages
+COLOR_PROCESS = 7       # Blue - GPU process list
 
 # NVIDIA GPU query fields (must match nvidia-smi output order)
 GPU_QUERY_FIELDS = "index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw"
+# GPU compute apps: pid, process_name, used_gpu_memory (limited fields available)
+GPU_COMPUTE_QUERY = "pid,process_name,used_gpu_memory"
+
+# Maximum GPU processes to display
+MAX_GPU_PROCS = 5
 
 
 class TermMon:
@@ -69,6 +76,7 @@ class TermMon:
         """Initialize the TermMon application."""
         self.running: bool = True
         self.gpu_data: List[Dict[str, Any]] = []
+        self.gpu_processes: List[Dict[str, Any]] = []
         self.system_data: Dict[str, Any] = {}
         self.last_cpu_stats: Optional[Tuple[int, int]] = None
         self.last_per_core_stats: Dict[int, Tuple[int, int]] = {}
@@ -217,10 +225,92 @@ class TermMon:
         except Exception as e:
             self.gpu_data = []
     
+    def get_gpu_processes(self) -> None:
+        """
+        Read GPU compute applications using nvidia-smi.
+        
+        Queries active GPU processes: PID, process name, and memory used.
+        Enriches with user and host memory from /proc filesystem.
+        Returns top processes sorted by VRAM usage.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    'nvidia-smi',
+                    f'--query-compute-apps={GPU_COMPUTE_QUERY}',
+                    '--format=csv,noheader,nounits'
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0:
+                processes = []
+                for line in result.stdout.strip().split('\n'):
+                    if not line.strip():
+                        continue
+                    parts = [p.strip() for p in line.split(',')]
+                    if len(parts) >= 3:
+                        try:
+                            # Order: pid, process_name, used_gpu_memory
+                            pid = int(parts[0].strip())
+                            # Process name might have commas, memory is last
+                            mem_used = float(parts[-1].strip())
+                            # Process name is everything in between
+                            process_name = ','.join(parts[1:-1]).strip()
+                            
+                            # Enrich with user and host memory from /proc
+                            user = "unknown"
+                            host_mem = 0.0
+                            try:
+                                # Get UID from /proc/[pid]/status
+                                with open(f'/proc/{pid}/status', 'r') as f:
+                                    for proc_line in f:
+                                        if proc_line.startswith('Uid:'):
+                                            uid = proc_line.split()[1]
+                                            # Look up username from UID
+                                            import pwd
+                                            try:
+                                                user = pwd.getpwuid(int(uid)).pw_name
+                                            except (KeyError, ValueError):
+                                                user = uid
+                                            break
+                                
+                                # Get RSS (resident set size) from /proc/[pid]/status
+                                with open(f'/proc/{pid}/status', 'r') as f:
+                                    for proc_line in f:
+                                        if proc_line.startswith('VmRSS:'):
+                                            # VmRSS is in kB
+                                            host_mem = float(proc_line.split()[1]) / 1024  # Convert to MB
+                                            break
+                            except (FileNotFoundError, PermissionError, IOError):
+                                # Process may have exited or no permission
+                                pass
+                            
+                            processes.append({
+                                'pid': pid,
+                                'user': user,
+                                'mem_used': mem_used,
+                                'host_mem': host_mem,
+                                'process_name': process_name
+                            })
+                        except (ValueError, IndexError):
+                            pass
+                
+                # Sort by memory usage (descending) and take top N
+                processes.sort(key=lambda x: x['mem_used'], reverse=True)
+                self.gpu_processes = processes[:MAX_GPU_PROCS]
+            else:
+                self.gpu_processes = []
+        except Exception as e:
+            self.gpu_processes = []
+    
     def update_stats(self) -> None:
         """Update all system and GPU statistics."""
         self.get_system_stats()
         self.get_gpu_stats()
+        self.get_gpu_processes()
     
     def draw_bar(
             self, stdscr, y: int, x: int, percent: float, width: int, color_pair: int
@@ -447,6 +537,63 @@ class TermMon:
         
         return y
     
+    def _draw_gpu_processes_section(self, stdscr, y: int, x: int, height: int) -> int:
+        """
+        Draw the GPU processes section (top N by VRAM usage).
+        
+        Args:
+            stdscr: Curses window
+            y: Starting row position
+            x: Column position
+            height: Terminal height (for bounds checking)
+            
+        Returns:
+            Next y position after the section
+        """
+        try:
+            # Box header
+            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
+            y += 1
+            stdscr.addstr(y, x, "│ GPU PROCESSES (nvtop-style)".ljust(BOX_WIDTH - 1) + "│")
+            y += 1
+            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+            y += 1
+            
+            # Column headings
+            heading = "│ PID    | USER       | GPU MEM    | HOST MEM   | Command"
+            stdscr.addstr(y, x, (heading.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
+            y += 1
+            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+            y += 1
+            
+            if not self.gpu_processes:
+                line = "│ No active GPU compute processes"
+                stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
+                y += 1
+            else:
+                for proc in self.gpu_processes:
+                    if y >= height - 3:
+                        break  # Don't draw off-screen
+                    
+                    # Truncate process name to fit
+                    proc_name = proc['process_name'][:35]
+                    mem_mb = proc['mem_used']
+                    host_mem_mb = proc['host_mem']
+                    user = proc['user'][:10]
+                    
+                    # Format: PID | USER | GPU MEM | HOST MEM | Command
+                    line = f"│ {proc['pid']:6} | {user:10} | {mem_mb:>8.0f}MB | {host_mem_mb:>8.0f}MB | {proc_name}"
+                    stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
+                    y += 1
+            
+            # Box footer
+            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
+            y += 2
+        except curses.error:
+            pass
+        
+        return y
+    
     def draw(self, stdscr) -> None:
         """Draw the complete UI with all monitoring sections."""
         curses.curs_set(0)
@@ -477,6 +624,9 @@ class TermMon:
         
         # Draw GPU section
         y = self._draw_gpu_section(stdscr, y, x, height)
+        
+        # Draw GPU processes section
+        y = self._draw_gpu_processes_section(stdscr, y, x, height)
         
         # Footer
         try:
@@ -511,6 +661,7 @@ class TermMon:
         curses.init_pair(COLOR_CPU, curses.COLOR_CYAN, -1)
         curses.init_pair(COLOR_VRAM, curses.COLOR_MAGENTA, -1)
         curses.init_pair(COLOR_ERROR, curses.COLOR_RED, -1)
+        curses.init_pair(COLOR_PROCESS, curses.COLOR_BLUE, -1)
         
         curses.cbreak()
         stdscr.keypad(True)
