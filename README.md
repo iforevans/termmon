@@ -120,6 +120,11 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.5.5 (2026-04-20)
+- **Version in header**: Display version number in title bar
+  - Header now shows: `termmon 1.5.5 - System Monitor`
+  - Version visible at a glance without checking docs
+
 ### v1.5.4 (2026-04-20)
 - **Flag-value pair wrapping**: Command-line flags stay with their values
   - `--cache-ram 4096` no longer splits across lines

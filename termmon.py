@@ -41,7 +41,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.5.4"
+__version__ = "1.5.5"
 __author__ = "Ifor Evans"
 
 
