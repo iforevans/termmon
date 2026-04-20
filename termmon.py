@@ -756,11 +756,11 @@ class TermMon:
                         if y >= height - 3:
                             break
                         # Just show the continuation, aligned with command column
-                        # Format: "│ PID(6) | USER(10) | GPU_MEM(11) | HOST_MEM(11) | CMD"
-                        # Breakdown: │(1) + space(1) + PID(6) + " | "(3) + USER(10) + " | "(3) + MEM(11) + " | "(3) + MEM(11) + " | "(3) = 52
-                        indent = "│" + " " * 51  # 51 spaces to align with command column start (after │)
+                        # Format: "│ PID(6) | USER(10) | GPU_MEM(8)+MB(2) | HOST_MEM(8)+MB(2) | CMD"
+                        # Breakdown: │(1) + space(1) + PID(6) + " | "(3) + USER(10) + " | "(3) + MEM(8) + "MB"(2) + " | "(3) + MEM(8) + "MB"(2) + " | "(3) = 50
+                        indent = "│" + " " * 49  # 49 spaces to align with command column start (after │)
                         # Ensure continuation doesn't exceed available width
-                        avail_width = BOX_WIDTH - 52  # After indent and closing │
+                        avail_width = BOX_WIDTH - 50  # After indent and closing │
                         if len(continuation) > avail_width:
                             # Split continuation into multiple lines if needed
                             chunks = [continuation[i:i+avail_width] for i in range(0, len(continuation), avail_width)]
