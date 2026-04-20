@@ -41,7 +41,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 __author__ = "Ifor Evans"
 
 
@@ -558,20 +558,20 @@ class TermMon:
                     stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
                     y += 1
                     
-                    # Row 2: VRAM (left) | Util (right)
-                    # Left column: VRAM
-                    label = "│ VRAM:"
-                    stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + 6, mem_pct, BAR_WIDTH, COLOR_VRAM)
-                    vram_info = f" {mem_used_gb:5.1f}GB/{mem_total_gb:4.1f}G {mem_pct:5.1f}%"
-                    stdscr.addstr(y, x + 6 + BAR_WIDTH, vram_info)
-                    
-                    # Right column: Util
-                    right_label = "Util:"
-                    stdscr.addstr(y, right_col_start, right_label)
-                    self.draw_bar(stdscr, y, right_col_start + 5, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
+                    # Row 2: Util (left) | VRAM (right)
+                    # Left column: Util
+                    left_label = "│ Util:"
+                    stdscr.addstr(y, x, left_label)
+                    self.draw_bar(stdscr, y, x + 6, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
                     util_info = f" {gpu['gpu_util']:6.1f}%"
-                    stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, util_info)
+                    stdscr.addstr(y, x + 6 + BAR_WIDTH, util_info)
+                    
+                    # Right column: VRAM
+                    right_label = "VRAM:"
+                    stdscr.addstr(y, right_col_start, right_label)
+                    self.draw_bar(stdscr, y, right_col_start + 5, mem_pct, BAR_WIDTH, COLOR_VRAM)
+                    vram_info = f" {mem_used_gb:5.1f}GB/{mem_total_gb:4.1f}G {mem_pct:5.1f}%"
+                    stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, vram_info)
                     
                     # Close the box
                     stdscr.addstr(y, x + BOX_WIDTH - 1, "│")

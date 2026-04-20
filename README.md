@@ -72,7 +72,7 @@ Simply run `termmon` and watch your system resources in real-time.
 │ NVIDIA GPU(s)                                                  │
 │────────────────────────────────────────────────────────────────│
 │ GPU 0: NVIDIA GeForce RTX 3090                  Temp:  59°C  Power: 110.2W │
-│ VRAM: ████████████████░░░░   22.0GB/24.0G  91.7%   Util: ████████░░  80.0% │
+│ Util: ████████░░░░░░░░░░░░░░░░  80.0%   VRAM: ████████░░ 22.0GB/24.0G  91.7% │
 └────────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────────┐
 │ GPU PROCESSES (nvtop-style)                                    │
@@ -119,6 +119,11 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
+
+### v1.5.1 (2026-04-20)
+- **GPU column layout adjustment**: Swapped Util and VRAM columns
+  - Row 2 now shows Util (left) + VRAM (right)
+  - Better visual hierarchy: quick utilization check first, then detailed VRAM
 
 ### v1.5.0 (2026-04-20)
 - **GPU display optimization**: Two-column compact layout
