@@ -41,7 +41,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.5.2"
+__version__ = "1.5.3"
 __author__ = "Ifor Evans"
 
 
@@ -664,10 +664,12 @@ class TermMon:
                     
                     for word in cmd_words:
                         if len(word) > MAX_WORD_LEN and '/' in word:
-                            # Split long paths on /
+                            # Split long paths on / but keep track of path boundaries
                             parts = [p for p in word.split('/') if p]  # Skip empty parts
                             if parts:
-                                expanded_words.extend(parts)
+                                # Add each part as a special "path segment" that rejoins with /
+                                for part in parts:
+                                    expanded_words.append(f"__PATHSEG__{part}")
                             else:
                                 expanded_words.append(word)
                         else:
@@ -676,16 +678,28 @@ class TermMon:
                     # Now do word wrapping with the expanded words
                     lines = []
                     current_cmd = ""
+                    in_path_context = False  # Track if we're building a path
                     
                     for word in expanded_words:
+                        # Check if this is a path segment
+                        is_path_seg = word.startswith("__PATHSEG__")
+                        actual_word = word[11:] if is_path_seg else word  # Remove prefix
+                        
                         if not current_cmd:
-                            current_cmd = word
-                        elif len(current_cmd) + 1 + len(word) <= cmd_width:
-                            current_cmd += " " + word
+                            current_cmd = actual_word
+                            in_path_context = is_path_seg
+                        elif len(current_cmd) + 1 + len(actual_word) <= cmd_width:
+                            # Join with / only if both current and new are in path context
+                            if in_path_context and is_path_seg:
+                                current_cmd += "/" + actual_word
+                            else:
+                                current_cmd += " " + actual_word
+                                in_path_context = is_path_seg
                         else:
                             if current_cmd:
                                 lines.append(current_cmd)
-                            current_cmd = word
+                            current_cmd = actual_word
+                            in_path_context = is_path_seg
                     
                     if current_cmd:
                         lines.append(current_cmd)

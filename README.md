@@ -120,6 +120,12 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.5.3 (2026-04-20)
+- **Path separator fix**: Long paths now preserve `/` between segments
+  - Path segments rejoin with `/` instead of spaces when wrapping
+  - Proper context tracking ensures arguments stay separate from paths
+  - Clean, readable command display with correct path formatting
+
 ### v1.5.2 (2026-04-20)
 - **Command wrapping fix**: Intelligent path splitting for long commands
   - Paths longer than 50 chars are split on `/` for better readability
