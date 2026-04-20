@@ -41,15 +41,15 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __author__ = "Ifor Evans"
 
 
 # Layout configuration
-BOX_WIDTH = 80          # Width of each section box
-BAR_WIDTH = 20          # Width of progress bars
-LABEL_WIDTH = 22        # Width of label column
-REFRESH_INTERVAL = 2    # Seconds between auto-refreshes
+BOX_WIDTH = 0          # Will be auto-calculated based on terminal width (80% of terminal)
+BAR_WIDTH = 20         # Width of progress bars
+LABEL_WIDTH = 22       # Width of label column
+REFRESH_INTERVAL = 2   # Seconds between auto-refreshes
 
 # Color pair IDs
 COLOR_TITLE = 1         # White - title and footer
@@ -263,6 +263,7 @@ class TermMon:
                             # Enrich with user and host memory from /proc
                             user = "unknown"
                             host_mem = 0.0
+                            cmdline = ""
                             try:
                                 # Get UID from /proc/[pid]/status
                                 with open(f'/proc/{pid}/status', 'r') as f:
@@ -284,6 +285,14 @@ class TermMon:
                                             # VmRSS is in kB
                                             host_mem = float(proc_line.split()[1]) / 1024  # Convert to MB
                                             break
+                                
+                                # Get command line from /proc/[pid]/cmdline
+                                try:
+                                    with open(f'/proc/{pid}/cmdline', 'r') as f:
+                                        # cmdline is null-separated
+                                        cmdline = f.read().replace('\0', ' ').strip()
+                                except (FileNotFoundError, PermissionError, IOError):
+                                    pass
                             except (FileNotFoundError, PermissionError, IOError):
                                 # Process may have exited or no permission
                                 pass
@@ -293,7 +302,8 @@ class TermMon:
                                 'user': user,
                                 'mem_used': mem_used,
                                 'host_mem': host_mem,
-                                'process_name': process_name
+                                'process_name': process_name,
+                                'cmdline': cmdline
                             })
                         except (ValueError, IndexError):
                             pass
@@ -574,20 +584,74 @@ class TermMon:
                 stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
                 y += 1
             else:
+                # Calculate column widths for wrapping
+                pid_width = 6
+                user_width = 10
+                gpu_mem_width = 10
+                host_mem_width = 10
+                separators = 4  # " | " appears 4 times
+                cmd_width = BOX_WIDTH - pid_width - user_width - gpu_mem_width - host_mem_width - separators - 2
+                
                 for proc in self.gpu_processes:
                     if y >= height - 3:
                         break  # Don't draw off-screen
                     
-                    # Truncate process name to fit
-                    proc_name = proc['process_name'][:35]
                     mem_mb = proc['mem_used']
                     host_mem_mb = proc['host_mem']
                     user = proc['user'][:10]
                     
-                    # Format: PID | USER | GPU MEM | HOST MEM | Command
-                    line = f"│ {proc['pid']:6} | {user:10} | {mem_mb:>8.0f}MB | {host_mem_mb:>8.0f}MB | {proc_name}"
-                    stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
-                    y += 1
+                    # Get command (use cmdline if available)
+                    if proc.get('cmdline'):
+                        import os
+                        parts = proc['cmdline'].split()
+                        if parts:
+                            base_name = os.path.basename(parts[0])
+                            full_cmd = base_name + ' ' + ' '.join(parts[1:])
+                        else:
+                            full_cmd = "unknown"
+                    else:
+                        import os
+                        full_cmd = os.path.basename(proc['process_name'].split(',')[0].strip())
+                    
+                    # Word-wrap the command if needed
+                    cmd_words = full_cmd.split()
+                    lines = []
+                    current_cmd = ""
+                    
+                    for word in cmd_words:
+                        if not current_cmd:
+                            current_cmd = word
+                        elif len(current_cmd) + 1 + len(word) <= cmd_width:
+                            current_cmd += " " + word
+                        else:
+                            lines.append(current_cmd)
+                            current_cmd = word
+                    
+                    if current_cmd:
+                        lines.append(current_cmd)
+                    
+                    # Draw first line with all columns
+                    if lines and y < height - 3:
+                        line = f"│ {proc['pid']:6} | {user:10} | {mem_mb:8.0f}MB | {host_mem_mb:8.0f}MB | {lines[0]}"
+                        stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
+                        y += 1
+                    
+                    # Draw continuation lines (just the command, indented)
+                    for continuation in lines[1:]:
+                        if y >= height - 3:
+                            break
+                        # Just show the continuation, aligned with command column
+                        # PID(6) + " | "(3) + USER(10) + " | "(3) + GPU_MEM(10) + " | "(3) + HOST_MEM(10) + " | "(3) = 48
+                        indent = "│" + " " * 48
+                        line = f"{indent}{continuation}"
+                        stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
+                        y += 1
+                    
+                    # Add blank separator line between processes (if space)
+                    if y < height - 3:
+                        line = "│" + " " * (BOX_WIDTH - 2) + "│"
+                        stdscr.addstr(y, x, line)
+                        y += 1
             
             # Box footer
             stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
@@ -602,6 +666,10 @@ class TermMon:
         curses.curs_set(0)
         
         height, width = stdscr.getmaxyx()
+        
+        # Calculate box width dynamically (80% of terminal width, min 80, max 120)
+        global BOX_WIDTH
+        BOX_WIDTH = max(80, min(120, int(width * 0.85)))
         
         stdscr.erase()
         

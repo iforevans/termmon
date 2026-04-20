@@ -122,6 +122,14 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.3.0 (2026-04-19)
+- **GPU process improvements**: Better command display
+  - Shows full command line with arguments (from /proc/[pid]/cmdline)
+  - Word-wraps long commands across multiple lines
+  - Continuation lines properly aligned with command column
+  - Auto-fits box width to terminal (85% of width, 80-120 chars)
+  - Cleaner display: just command basename + args, no full paths
+
 ### v1.2.0 (2026-04-19)
 - **UI improvements**: Compact, consistent display format
   - System memory: Single-line `Mem: 12.5GB/15.4G ████████  81.2%` format
