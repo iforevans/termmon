@@ -801,7 +801,7 @@ class TermMon:
         stdscr.erase()
         
         # Title
-        title = f" termmon - System Monitor | {datetime.now().strftime('%H:%M:%S')} | q:quit r:refresh h:help "
+        title = f" termmon {__version__} - System Monitor | {datetime.now().strftime('%H:%M:%S')} | q:quit r:refresh h:help "
         try:
             stdscr.attron(curses.A_REVERSE)
             stdscr.addstr(0, 0, title[:width-1].ljust(width-1)[:width-1])
