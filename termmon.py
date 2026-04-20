@@ -41,7 +41,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 __author__ = "Ifor Evans"
 
 
@@ -421,7 +421,7 @@ class TermMon:
     
     def _draw_cpu_section(self, stdscr, y: int, x: int, height: int) -> int:
         """
-        Draw the CPU monitoring section (overall + per-core).
+        Draw the CPU monitoring section (overall + per-core in 2 columns).
         
         Args:
             stdscr: Curses window
@@ -442,27 +442,64 @@ class TermMon:
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
             
-            # Overall CPU usage
+            # Overall CPU usage (align with core lines)
             cpu_pct = self.system_data.get('cpu_usage', 0)
-            label = f"│ Overall:".ljust(12) + f"{cpu_pct:6.1f}%".rjust(LABEL_WIDTH - 12)
+            label = f"│ Overall:".ljust(11) + f"{cpu_pct:6.1f}%".rjust(8)
             stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + LABEL_WIDTH, cpu_pct, BAR_WIDTH, COLOR_CPU)
+            self.draw_bar(stdscr, y, x + 11 + 8, cpu_pct, BAR_WIDTH, COLOR_CPU)
+            # Close the box
             stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
             y += 1
             
-            # Per-core usage
+            # Per-core usage in TWO columns
             per_core = self.system_data.get('per_core_usage', [])
-            for core_id, core_pct in per_core:
+            
+            # Calculate split point (half the cores in each column)
+            mid_point = (core_count + 1) // 2
+            
+            # Calculate column widths
+            # Left column: "│ Core N:" (11 chars) + percentage (8 chars) + bar (20 chars) = 39 chars
+            # Right column starts after that + separator
+            left_col_width = 11 + 8 + BAR_WIDTH + 2  # ~41 chars
+            right_col_start = x + left_col_width
+            
+            # Draw cores in two columns
+            for i in range(mid_point):
                 if y >= height - 3:
                     break  # Don't draw off-screen
                 
-                label = f"│ Core {core_id}:".ljust(11) + f"{core_pct:6.1f}%".rjust(LABEL_WIDTH - 11)
-                try:
-                    stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + LABEL_WIDTH, core_pct, BAR_WIDTH, COLOR_CPU)
-                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-                except curses.error:
-                    pass  # Skip if can't draw
+                # Left column
+                if i < len(per_core):
+                    core_id, core_pct = per_core[i]
+                    label = f"│ Core {core_id}:".ljust(11) + f"{core_pct:6.1f}%".rjust(8)
+                    try:
+                        stdscr.addstr(y, x, label)
+                        self.draw_bar(stdscr, y, x + 11 + 8, core_pct, BAR_WIDTH, COLOR_CPU)
+                    except curses.error:
+                        pass
+                
+                # Right column (if we have enough cores)
+                right_idx = i + mid_point
+                if right_idx < len(per_core):
+                    core_id, core_pct = per_core[right_idx]
+                    right_label = f"Core {core_id}:".ljust(11) + f"{core_pct:6.1f}%".rjust(8)
+                    try:
+                        stdscr.addstr(y, right_col_start, right_label)
+                        self.draw_bar(stdscr, y, right_col_start + 11 + 8, core_pct, BAR_WIDTH, COLOR_CPU)
+                        # Close the right side of the box
+                        right_end = right_col_start + 11 + 8 + BAR_WIDTH
+                        if right_end < BOX_WIDTH - 1:
+                            stdscr.addstr(y, right_end, " " * (BOX_WIDTH - 1 - right_end))
+                        stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                    except curses.error:
+                        pass
+                else:
+                    # Just close the box if no right column
+                    try:
+                        stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                    except curses.error:
+                        pass
+                
                 y += 1
             
             # Box footer

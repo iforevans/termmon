@@ -122,6 +122,14 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.4.0 (2026-04-19)
+- **CPU display optimization**: Two-column core layout
+  - Cores displayed in two columns (left/right) instead of single column
+  - Cuts vertical space in half for multi-core systems
+  - Overall CPU usage line aligned with core lines
+  - Progress bars start at same position for visual consistency
+  - Much more compact display for 8+ core systems
+
 ### v1.3.0 (2026-04-19)
 - **GPU process improvements**: Better command display
   - Shows full command line with arguments (from /proc/[pid]/cmdline)
