@@ -120,6 +120,12 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.5.4 (2026-04-20)
+- **Flag-value pair wrapping**: Command-line flags stay with their values
+  - `--cache-ram 4096` no longer splits across lines
+  - Flags starting with `-` or `--` are paired with following non-flag arguments
+  - Cleaner, more readable command display
+
 ### v1.5.3 (2026-04-20)
 - **Path separator fix**: Long paths now preserve `/` between segments
   - Path segments rejoin with `/` instead of spaces when wrapping

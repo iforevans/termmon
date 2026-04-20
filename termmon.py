@@ -41,7 +41,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.5.3"
+__version__ = "1.5.4"
 __author__ = "Ifor Evans"
 
 
@@ -653,7 +653,7 @@ class TermMon:
                         import os
                         full_cmd = os.path.basename(proc['process_name'].split(',')[0].strip())
                     
-                # Word-wrap the command if needed
+               # Word-wrap the command if needed
                     # First, check if we have any words that are too long (like paths)
                     # and split them on / before doing word wrapping
                     cmd_words = full_cmd.split(' ')
@@ -675,15 +675,44 @@ class TermMon:
                         else:
                             expanded_words.append(word)
                     
-                    # Now do word wrapping with the expanded words
+                    # Pre-process: combine flag-value pairs to keep them together
+                    # A flag is a word starting with - or --, followed by a non-flag value
+                    paired_words = []
+                    i = 0
+                    while i < len(expanded_words):
+                        word = expanded_words[i]
+                        # Check if this is a flag (starts with - but not a path segment)
+                        if (word.startswith('-') and not word.startswith('__PATHSEG__') and 
+                            i + 1 < len(expanded_words)):
+                            next_word = expanded_words[i + 1]
+                            # Check if next word is NOT a flag (doesn't start with -)
+                            if not next_word.startswith('-') and not next_word.startswith('__PATHSEG__'):
+                                # Combine flag and value with a special separator
+                                paired_words.append(f"{word}__FLAGVAL__{next_word}")
+                                i += 2  # Skip both words
+                                continue
+                        paired_words.append(word)
+                        i += 1
+                    
+                    # Now do word wrapping with the (possibly paired) words
                     lines = []
                     current_cmd = ""
                     in_path_context = False  # Track if we're building a path
                     
-                    for word in expanded_words:
+                    for word in paired_words:
                         # Check if this is a path segment
                         is_path_seg = word.startswith("__PATHSEG__")
-                        actual_word = word[11:] if is_path_seg else word  # Remove prefix
+                        # Check if this is a flag-value pair
+                        is_flag_pair = "__FLAGVAL__" in word
+                        
+                        if is_path_seg:
+                            actual_word = word[11:]  # Remove __PATHSEG__ prefix
+                        elif is_flag_pair:
+                            # Split and rejoin with space for flag-value pairs
+                            parts = word.split("__FLAGVAL__")
+                            actual_word = parts[0] + " " + parts[1]
+                        else:
+                            actual_word = word
                         
                         if not current_cmd:
                             current_cmd = actual_word
