@@ -41,7 +41,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.5.1"
+__version__ = "1.5.2"
 __author__ = "Ifor Evans"
 
 
@@ -653,22 +653,54 @@ class TermMon:
                         import os
                         full_cmd = os.path.basename(proc['process_name'].split(',')[0].strip())
                     
-                    # Word-wrap the command if needed
-                    cmd_words = full_cmd.split()
+                # Word-wrap the command if needed
+                    # First, check if we have any words that are too long (like paths)
+                    # and split them on / before doing word wrapping
+                    cmd_words = full_cmd.split(' ')
+                    expanded_words = []
+                    
+                    # Split long paths (>50 chars) on / for better readability
+                    MAX_WORD_LEN = 50
+                    
+                    for word in cmd_words:
+                        if len(word) > MAX_WORD_LEN and '/' in word:
+                            # Split long paths on /
+                            parts = [p for p in word.split('/') if p]  # Skip empty parts
+                            if parts:
+                                expanded_words.extend(parts)
+                            else:
+                                expanded_words.append(word)
+                        else:
+                            expanded_words.append(word)
+                    
+                    # Now do word wrapping with the expanded words
                     lines = []
                     current_cmd = ""
                     
-                    for word in cmd_words:
+                    for word in expanded_words:
                         if not current_cmd:
                             current_cmd = word
                         elif len(current_cmd) + 1 + len(word) <= cmd_width:
                             current_cmd += " " + word
                         else:
-                            lines.append(current_cmd)
+                            if current_cmd:
+                                lines.append(current_cmd)
                             current_cmd = word
                     
                     if current_cmd:
                         lines.append(current_cmd)
+                    
+                    # Final pass: handle any remaining lines that are still too long
+                    # (shouldn't happen now, but just in case)
+                    final_lines = []
+                    for line in lines:
+                        if len(line) > cmd_width:
+                            # Chunk at fixed width as last resort
+                            for i in range(0, len(line), cmd_width):
+                                final_lines.append(line[i:i+cmd_width])
+                        else:
+                            final_lines.append(line)
+                    lines = final_lines
                     
                     # Draw first line with all columns
                     if lines and y < height - 3:
@@ -682,10 +714,22 @@ class TermMon:
                             break
                         # Just show the continuation, aligned with command column
                         # PID(6) + " | "(3) + USER(10) + " | "(3) + GPU_MEM(10) + " | "(3) + HOST_MEM(10) + " | "(3) = 48
-                        indent = "│" + " " * 48
-                        line = f"{indent}{continuation}"
-                        stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
-                        y += 1
+                        indent = "│" + " " * 47  # 47 spaces to align with command column start
+                        # Ensure continuation doesn't exceed available width
+                        avail_width = BOX_WIDTH - 48  # After indent and closing │
+                        if len(continuation) > avail_width:
+                            # Split continuation into multiple lines if needed
+                            chunks = [continuation[i:i+avail_width] for i in range(0, len(continuation), avail_width)]
+                            for chunk_idx, chunk in enumerate(chunks):
+                                if y >= height - 3:
+                                    break
+                                line = f"{indent}{chunk}"
+                                stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
+                                y += 1
+                        else:
+                            line = f"{indent}{continuation}"
+                            stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
+                            y += 1
                     
                     # Add blank separator line between processes (if space)
                     if y < height - 3:

@@ -120,6 +120,13 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.5.2 (2026-04-20)
+- **Command wrapping fix**: Intelligent path splitting for long commands
+  - Paths longer than 50 chars are split on `/` for better readability
+  - Words wrap naturally at space boundaries
+  - Continuation lines chunk properly if they exceed available width
+  - No more truncated words or unnecessary line breaks
+
 ### v1.5.1 (2026-04-20)
 - **GPU column layout adjustment**: Swapped Util and VRAM columns
   - Row 2 now shows Util (left) + VRAM (right)
