@@ -120,6 +120,12 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.5.6 (2026-04-20)
+- **Continuation line alignment**: Fixed GPU process command wrapping
+  - Continuation lines now align perfectly with command column
+  - Corrected indent calculation: 50 chars (was 48, briefly 52)
+  - Memory columns are 8 chars + "MB" suffix, properly accounted for
+
 ### v1.5.5 (2026-04-20)
 - **Version in header**: Display version number in title bar
   - Header now shows: `termmon 1.5.5 - System Monitor`
