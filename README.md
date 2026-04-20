@@ -122,6 +122,13 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.5.0 (2026-04-20)
+- **GPU display optimization**: Two-column compact layout
+  - Row 1: GPU name (left) + Temp/Power (right) on same line
+  - Row 2: VRAM bar (left) + Util bar (right) on same line
+  - Cuts GPU section from 4 rows down to 2 rows
+  - Much more compact for multi-GPU systems
+
 ### v1.4.0 (2026-04-19)
 - **CPU display optimization**: Two-column core layout
   - Cores displayed in two columns (left/right) instead of single column

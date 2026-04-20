@@ -41,7 +41,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __author__ = "Ifor Evans"
 
 
@@ -359,7 +359,7 @@ class TermMon:
     
     def _draw_memory_section(self, stdscr, y: int, x: int) -> int:
         """
-        Draw the system memory monitoring section.
+        Draw the system memory monitoring section (Mem and Swap in 2 columns).
         
         Args:
             stdscr: Curses window
@@ -378,36 +378,35 @@ class TermMon:
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
             
-            # Memory: used/total with bar (compact single line)
+            # Calculate column positions
+            # Left: "│ Mem:" (6) + bar (20) + info (~15) = ~41 chars
+            # Right starts after that
+            left_col_width = 6 + BAR_WIDTH + 16  # ~42 chars
+            right_col_start = x + left_col_width
+            
+            # Memory (left column)
             mem_pct = self.system_data.get('mem_percent', 0)
             used_gb = self.system_data.get('used_mem_gb', 0)
             total_gb = self.system_data.get('total_mem_gb', 0)
             
-            # Format: "Mem:  12.5GB/15.4G████████████████░░░░  81.2%"
-            label = f"│ Mem:"
+            label = "│ Mem:"
             stdscr.addstr(y, x, label)
-            
-            # Draw the bar starting after the label
             self.draw_bar(stdscr, y, x + 6, mem_pct, BAR_WIDTH, COLOR_MEMORY)
-            
-            # Add used/total and percentage after the bar
             mem_info = f" {used_gb:5.1f}GB/{total_gb:4.1f}G {mem_pct:5.1f}%"
-            remaining = BOX_WIDTH - 6 - BAR_WIDTH - 1
-            stdscr.addstr(y, x + 6 + BAR_WIDTH, mem_info.ljust(remaining)[:remaining])
-            stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-            y += 1
+            stdscr.addstr(y, x + 6 + BAR_WIDTH, mem_info)
             
-            # Swap with bar (same compact format)
+            # Swap (right column)
             swap_pct = self.system_data.get('swap_percent', 0)
             swap_used_gb = self.system_data.get('swap_used_mb', 0) / 1024
             swap_total_gb = self.system_data.get('swap_total_mb', 0) / 1024
             
-            label = "│ Swap:"
-            stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + 6, swap_pct, BAR_WIDTH, COLOR_SWAP)
-            
+            right_label = "Swap:"
+            stdscr.addstr(y, right_col_start, right_label)
+            self.draw_bar(stdscr, y, right_col_start + 5, swap_pct, BAR_WIDTH, COLOR_SWAP)
             swap_info = f" {swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB {swap_pct:5.1f}%"
-            stdscr.addstr(y, x + 6 + BAR_WIDTH, swap_info.ljust(remaining)[:remaining])
+            stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, swap_info)
+            
+            # Close the box
             stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
             y += 1
             
@@ -512,7 +511,7 @@ class TermMon:
     
     def _draw_gpu_section(self, stdscr, y: int, x: int, height: int) -> int:
         """
-        Draw the NVIDIA GPU monitoring section.
+        Draw the NVIDIA GPU monitoring section (2-column layout).
         
         Args:
             stdscr: Curses window
@@ -539,39 +538,43 @@ class TermMon:
             else:
                 for gpu in self.gpu_data:
                     mem_pct = (gpu['mem_used'] / gpu['mem_total']) * 100 if gpu['mem_total'] > 0 else 0
-                    
-                    # GPU name (truncated if needed)
-                    name_line = f"│ GPU {gpu['idx']}: {gpu['name'][:32]}"
-                    stdscr.addstr(y, x, (name_line + " " * (BOX_WIDTH - len(name_line) - 1))[:BOX_WIDTH-1] + "│")
-                    y += 1
-                    
-                    # VRAM usage (in GB for consistency with system memory)
                     mem_used_gb = gpu['mem_used'] / 1024
                     mem_total_gb = gpu['mem_total'] / 1024
                     
+                    # Calculate column positions
+                    left_col_width = 42  # GPU name takes ~42 chars
+                    right_col_start = x + left_col_width
+                    
+                    # Row 1: GPU name (left) | Temp + Power (right) - SAME LINE
+                    gpu_name = f"GPU {gpu['idx']}: {gpu['name'][:35]}"
+                    temp_power = f"Temp: {gpu['temp']:5.0f}°C  Power: {gpu['power']:6.1f}W"
+                    
+                    # Build the combined line
+                    line = f"│ {gpu_name}"
+                    stdscr.addstr(y, x, line)
+                    
+                    # Add temp/power on the right
+                    stdscr.addstr(y, right_col_start, temp_power)
+                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                    y += 1
+                    
+                    # Row 2: VRAM (left) | Util (right)
+                    # Left column: VRAM
                     label = "│ VRAM:"
                     stdscr.addstr(y, x, label)
                     self.draw_bar(stdscr, y, x + 6, mem_pct, BAR_WIDTH, COLOR_VRAM)
-                    pct_str = f" {mem_used_gb:5.1f}GB/{mem_total_gb:4.1f}G {mem_pct:5.1f}%"
-                    remaining = BOX_WIDTH - 6 - BAR_WIDTH - 1
-                    stdscr.addstr(y, x + 6 + BAR_WIDTH, pct_str.ljust(remaining)[:remaining])
-                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-                    y += 1
+                    vram_info = f" {mem_used_gb:5.1f}GB/{mem_total_gb:4.1f}G {mem_pct:5.1f}%"
+                    stdscr.addstr(y, x + 6 + BAR_WIDTH, vram_info)
                     
-                    # GPU utilization (align % start with VRAM numbers start)
-                    label = "│ Util:"
-                    stdscr.addstr(y, x, label)
-                    self.draw_bar(stdscr, y, x + 6, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
-                    # VRAM: " 38.6GB/24.0G  91.7%" - first digit at position 1
-                    # UTIL: "80.0%" - first digit at position 1 (no leading space)
-                    util_str = f"{gpu['gpu_util']:5.1f}%"
-                    stdscr.addstr(y, x + 6 + BAR_WIDTH, util_str.ljust(remaining)[:remaining])
-                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-                    y += 1
+                    # Right column: Util
+                    right_label = "Util:"
+                    stdscr.addstr(y, right_col_start, right_label)
+                    self.draw_bar(stdscr, y, right_col_start + 5, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
+                    util_info = f" {gpu['gpu_util']:6.1f}%"
+                    stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, util_info)
                     
-                    # Temperature and power
-                    temp_line = f"│ Temp: {gpu['temp']:5.0f}°C  Power: {gpu['power']:6.1f}W"
-                    stdscr.addstr(y, x, (temp_line + " " * (BOX_WIDTH - len(temp_line) - 1))[:BOX_WIDTH-1] + "│")
+                    # Close the box
+                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
                     y += 1
                     
                     # Separator between GPUs (if more GPUs and space available)
