@@ -36,12 +36,14 @@ License:
 """
 
 import curses
+import os
+import pwd
 import subprocess
 from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.5.6"
+__version__ = "1.6.0"
 __author__ = "Ifor Evans"
 
 
@@ -265,26 +267,19 @@ class TermMon:
                             host_mem = 0.0
                             cmdline = ""
                             try:
-                                # Get UID from /proc/[pid]/status
+                                # Get UID and RSS from /proc/[pid]/status (single read)
                                 with open(f'/proc/{pid}/status', 'r') as f:
                                     for proc_line in f:
                                         if proc_line.startswith('Uid:'):
                                             uid = proc_line.split()[1]
                                             # Look up username from UID
-                                            import pwd
                                             try:
                                                 user = pwd.getpwuid(int(uid)).pw_name
                                             except (KeyError, ValueError):
                                                 user = uid
-                                            break
-                                
-                                # Get RSS (resident set size) from /proc/[pid]/status
-                                with open(f'/proc/{pid}/status', 'r') as f:
-                                    for proc_line in f:
-                                        if proc_line.startswith('VmRSS:'):
+                                        elif proc_line.startswith('VmRSS:'):
                                             # VmRSS is in kB
                                             host_mem = float(proc_line.split()[1]) / 1024  # Convert to MB
-                                            break
                                 
                                 # Get command line from /proc/[pid]/cmdline
                                 try:
@@ -357,6 +352,143 @@ class TermMon:
         except curses.error:
             pass
     
+    def _wrap_command(self, cmd: str, width: int) -> List[str]:
+        """
+        Word-wrap a command string to fit within `width` columns.
+
+        Handles:
+        - Long paths split on '/' with proper rejoining across lines
+        - Flag-value pairing (--flag value stays together on one line)
+        - Flag + multi-segment path (continuation segments tracked via __PCONT__)
+        - Multiple/extra spaces normalized away
+        - Single words exceeding width are hard-chunked as last resort
+
+        Args:
+            cmd: The command string to wrap
+            width: Maximum line width in columns
+
+        Returns:
+            List of lines, each <= width characters
+        """
+        if not cmd or not cmd.strip():
+            return [""]
+
+        # Short internal markers (prefix length = len(marker))
+        PSG = "__PSG__"
+        PCONT = "__PCONT__"
+        FV = "__FLAGVAL__"
+
+        # Split on whitespace (handles multiple spaces, tabs, etc.)
+        cmd_words = cmd.split()
+
+        # Phase 1: Split long path-like words on '/' for readability
+        MAX_WORD_LEN = 50
+        expanded_words: List[str] = []
+        for word in cmd_words:
+            if len(word) > MAX_WORD_LEN and '/' in word:
+                parts = [p for p in word.split('/') if p]
+                if parts:
+                    for part in parts:
+                        expanded_words.append(f"{PSG}{part}")
+                else:
+                    expanded_words.append(word)
+            else:
+                expanded_words.append(word)
+
+        # Phase 2: Flag-value pairing
+        # A flag starts with '-'. It pairs with the next non-flag token.
+        # For flag + path segments: pair with first segment, mark rest as PCONT
+        # so they can wrap independently while maintaining / joins.
+        paired_words: List[str] = []
+        i = 0
+        while i < len(expanded_words):
+            word = expanded_words[i]
+            is_flag = word.startswith('-') and not word.startswith(PSG)
+            if is_flag and i + 1 < len(expanded_words):
+                next_word = expanded_words[i + 1]
+                next_is_flag = next_word.startswith('-') and not next_word.startswith(PSG)
+                if not next_is_flag:
+                    if next_word.startswith(PSG):
+                        val = next_word[len(PSG):]
+                        paired_words.append(f"{word}{FV}{val}")
+                        j = i + 2
+                        while j < len(expanded_words) and expanded_words[j].startswith(PSG):
+                            paired_words.append(f"{PCONT}{expanded_words[j][len(PSG):]}")
+                            j += 1
+                        i = j
+                    else:
+                        paired_words.append(f"{word}{FV}{next_word}")
+                        i += 2
+                    continue
+            paired_words.append(word)
+            i += 1
+
+        # Phase 3: Word wrapping with path context tracking
+        lines: List[str] = []
+        current_line = ""
+        in_path = False
+
+        for token in paired_words:
+            is_psg = token.startswith(PSG)
+            is_pcont = token.startswith(PCONT)
+            is_flag_pair = FV in token and not is_psg
+
+            # Resolve display text and whether this token is a path segment
+            token_in_path = False
+            if is_psg:
+                display = token[len(PSG):]
+                token_in_path = True
+            elif is_pcont:
+                display = token[len(PCONT):]
+                token_in_path = True
+            elif is_flag_pair:
+                parts = token.split(FV, 1)
+                val = parts[1]
+                was_path = val.startswith(PSG)
+                if was_path:
+                    val = val[len(PSG):]
+                display = parts[0] + " " + val
+                token_in_path = was_path  # True if value came from path segments
+            else:
+                display = token
+
+            if not current_line:
+                current_line = display
+                in_path = token_in_path
+            elif in_path and token_in_path:
+                # Both in path context: join with /
+                if len(current_line) + 1 + len(display) <= width:
+                    current_line += "/" + display
+                else:
+                    lines.append(current_line)
+                    current_line = display
+                    in_path = True
+            elif len(current_line) + 1 + len(display) <= width:
+                # Normal fit — PCONT after a path start should join with /
+                if token_in_path and is_pcont:
+                    current_line += "/" + display
+                else:
+                    current_line += " " + display
+                    in_path = token_in_path
+            else:
+                lines.append(current_line)
+                current_line = display
+                in_path = token_in_path
+
+        if current_line:
+            lines.append(current_line)
+
+        # Phase 4: Hard-chunk any remaining lines still exceeding width
+        final_lines: List[str] = []
+        for line in lines:
+            if len(line) > width:
+                for chunk_start in range(0, len(line), width):
+                    final_lines.append(line[chunk_start:chunk_start + width])
+            else:
+                final_lines.append(line)
+
+        return final_lines
+
     def _draw_memory_section(self, stdscr, y: int, x: int) -> int:
         """
         Draw the system memory monitoring section (Mem and Swap in 2 columns).
@@ -625,12 +757,11 @@ class TermMon:
                 y += 1
             else:
                 # Calculate column widths for wrapping
-                pid_width = 6
-                user_width = 10
-                gpu_mem_width = 10
-                host_mem_width = 10
-                separators = 4  # " | " appears 4 times
-                cmd_width = BOX_WIDTH - pid_width - user_width - gpu_mem_width - host_mem_width - separators - 2
+                # Column widths for process display
+                # First line prefix: "│ PID(6) | USER(10) | MEM(10) | MEM(10) | " = 50 chars
+                # Continuation indent: "│" + 49 spaces = 50 chars
+                # Actual command space = BOX_WIDTH - 50 (prefix) - 1 (closing │) = BOX_WIDTH - 51
+                cmd_width = BOX_WIDTH - 51
                 
                 for proc in self.gpu_processes:
                     if y >= height - 3:
@@ -642,7 +773,6 @@ class TermMon:
                     
                     # Get command (use cmdline if available)
                     if proc.get('cmdline'):
-                        import os
                         parts = proc['cmdline'].split()
                         if parts:
                             base_name = os.path.basename(parts[0])
@@ -650,100 +780,10 @@ class TermMon:
                         else:
                             full_cmd = "unknown"
                     else:
-                        import os
                         full_cmd = os.path.basename(proc['process_name'].split(',')[0].strip())
-                    
-               # Word-wrap the command if needed
-                    # First, check if we have any words that are too long (like paths)
-                    # and split them on / before doing word wrapping
-                    cmd_words = full_cmd.split(' ')
-                    expanded_words = []
-                    
-                    # Split long paths (>50 chars) on / for better readability
-                    MAX_WORD_LEN = 50
-                    
-                    for word in cmd_words:
-                        if len(word) > MAX_WORD_LEN and '/' in word:
-                            # Split long paths on / but keep track of path boundaries
-                            parts = [p for p in word.split('/') if p]  # Skip empty parts
-                            if parts:
-                                # Add each part as a special "path segment" that rejoins with /
-                                for part in parts:
-                                    expanded_words.append(f"__PATHSEG__{part}")
-                            else:
-                                expanded_words.append(word)
-                        else:
-                            expanded_words.append(word)
-                    
-                    # Pre-process: combine flag-value pairs to keep them together
-                    # A flag is a word starting with - or --, followed by a non-flag value
-                    paired_words = []
-                    i = 0
-                    while i < len(expanded_words):
-                        word = expanded_words[i]
-                        # Check if this is a flag (starts with - but not a path segment)
-                        if (word.startswith('-') and not word.startswith('__PATHSEG__') and 
-                            i + 1 < len(expanded_words)):
-                            next_word = expanded_words[i + 1]
-                            # Check if next word is NOT a flag (doesn't start with -)
-                            if not next_word.startswith('-') and not next_word.startswith('__PATHSEG__'):
-                                # Combine flag and value with a special separator
-                                paired_words.append(f"{word}__FLAGVAL__{next_word}")
-                                i += 2  # Skip both words
-                                continue
-                        paired_words.append(word)
-                        i += 1
-                    
-                    # Now do word wrapping with the (possibly paired) words
-                    lines = []
-                    current_cmd = ""
-                    in_path_context = False  # Track if we're building a path
-                    
-                    for word in paired_words:
-                        # Check if this is a path segment
-                        is_path_seg = word.startswith("__PATHSEG__")
-                        # Check if this is a flag-value pair
-                        is_flag_pair = "__FLAGVAL__" in word
-                        
-                        if is_path_seg:
-                            actual_word = word[11:]  # Remove __PATHSEG__ prefix
-                        elif is_flag_pair:
-                            # Split and rejoin with space for flag-value pairs
-                            parts = word.split("__FLAGVAL__")
-                            actual_word = parts[0] + " " + parts[1]
-                        else:
-                            actual_word = word
-                        
-                        if not current_cmd:
-                            current_cmd = actual_word
-                            in_path_context = is_path_seg
-                        elif len(current_cmd) + 1 + len(actual_word) <= cmd_width:
-                            # Join with / only if both current and new are in path context
-                            if in_path_context and is_path_seg:
-                                current_cmd += "/" + actual_word
-                            else:
-                                current_cmd += " " + actual_word
-                                in_path_context = is_path_seg
-                        else:
-                            if current_cmd:
-                                lines.append(current_cmd)
-                            current_cmd = actual_word
-                            in_path_context = is_path_seg
-                    
-                    if current_cmd:
-                        lines.append(current_cmd)
-                    
-                    # Final pass: handle any remaining lines that are still too long
-                    # (shouldn't happen now, but just in case)
-                    final_lines = []
-                    for line in lines:
-                        if len(line) > cmd_width:
-                            # Chunk at fixed width as last resort
-                            for i in range(0, len(line), cmd_width):
-                                final_lines.append(line[i:i+cmd_width])
-                        else:
-                            final_lines.append(line)
-                    lines = final_lines
+
+                    # Word-wrap the command
+                    lines = self._wrap_command(full_cmd, cmd_width)
                     
                     # Draw first line with all columns
                     if lines and y < height - 3:

@@ -120,6 +120,16 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.6.0 (2026-04-22)
+- **Major command wrapping overhaul**: Fixed word truncation, unnecessary line breaks, and path splitting
+  - Extracted `_wrap_command()` into a dedicated method (4-phase pipeline)
+  - Fixed `cmd_width` calculation: corrected column prefix from 42 to 51 chars (was clipping 8 chars)
+  - Path continuation segments (`__PCONT__`) wrap independently while maintaining `/` joins
+  - Flag+path pairs (`-m /path/to/file`) keep the flag with the first segment, remaining segments wrap naturally
+  - No more truncated words, no more broken paths, no more unnecessary breaks
+- **Code cleanup**: Moved runtime `import os` and `import pwd` to top level
+- **Performance**: Merged duplicate `/proc/[pid]/status` reads into single pass
+
 ### v1.5.6 (2026-04-20)
 - **Continuation line alignment**: Fixed GPU process command wrapping
   - Continuation lines now align perfectly with command column
