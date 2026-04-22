@@ -36,21 +36,22 @@ License:
 """
 
 import curses
+import concurrent.futures
 import os
 import pwd
+import signal
 import subprocess
 from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.6.0"
+__version__ = "1.6.2"
 __author__ = "Ifor Evans"
 
 
 # Layout configuration
 BOX_WIDTH = 0          # Will be auto-calculated based on terminal width (80% of terminal)
 BAR_WIDTH = 20         # Width of progress bars
-LABEL_WIDTH = 22       # Width of label column
 REFRESH_INTERVAL = 2   # Seconds between auto-refreshes
 
 # Color pair IDs
@@ -61,6 +62,7 @@ COLOR_CPU = 4           # Cyan - CPU usage bar
 COLOR_VRAM = 5          # Magenta - VRAM usage bar
 COLOR_ERROR = 6         # Red - error messages
 COLOR_PROCESS = 7       # Blue - GPU process list
+COLOR_POPUP = 8         # White on blue - help popup
 
 # NVIDIA GPU query fields (must match nvidia-smi output order)
 GPU_QUERY_FIELDS = "index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw"
@@ -82,6 +84,21 @@ class TermMon:
         self.system_data: Dict[str, Any] = {}
         self.last_cpu_stats: Optional[Tuple[int, int]] = None
         self.last_per_core_stats: Dict[int, Tuple[int, int]] = {}
+        self.core_count: int = self._get_core_count()
+        self._resized: bool = False  # SIGWINCH flag
+    
+    def _on_resize(self, signum: int, frame: Any) -> None:
+        """Handle terminal resize (SIGWINCH)."""
+        self._resized = True
+
+    @staticmethod
+    def _get_core_count() -> int:
+        """Read CPU core count from /proc/cpuinfo (called once at init)."""
+        try:
+            with open('/proc/cpuinfo', 'r') as f:
+                return len([l for l in f.read().split('\n') if l.startswith('processor')])
+        except (FileNotFoundError, IOError):
+            return 0
         
     def get_system_stats(self) -> None:
         """
@@ -163,9 +180,6 @@ class TermMon:
             # Sort by core ID
             per_core_usage.sort(key=lambda x: x[0])
             
-            with open('/proc/cpuinfo', 'r') as f:
-                core_count = len([l for l in f.read().split('\n') if l.startswith('processor')])
-            
             mem_percent = (used_mem / total_mem) * 100 if total_mem > 0 else 0
             swap_percent = (swap_used / swap_total) * 100 if swap_total > 0 else 0
             
@@ -178,9 +192,11 @@ class TermMon:
                 'swap_used_mb': swap_used_mb,
                 'swap_percent': swap_percent,
                 'cpu_usage': cpu_usage,
-                'core_count': core_count,
+                'core_count': self.core_count,
                 'per_core_usage': per_core_usage
             }
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             self.system_data['error'] = str(e)
     
@@ -224,6 +240,8 @@ class TermMon:
                 self.gpu_data = gpus
             else:
                 self.gpu_data = []
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             self.gpu_data = []
     
@@ -308,14 +326,38 @@ class TermMon:
                 self.gpu_processes = processes[:MAX_GPU_PROCS]
             else:
                 self.gpu_processes = []
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             self.gpu_processes = []
     
     def update_stats(self) -> None:
-        """Update all system and GPU statistics."""
+        """Update all system and GPU statistics.
+        
+        System stats are read sequentially; GPU stats and GPU processes
+        are queried in parallel since they run independent nvidia-smi calls.
+        """
         self.get_system_stats()
-        self.get_gpu_stats()
-        self.get_gpu_processes()
+        self._get_gpu_data_parallel()
+    
+    def _get_gpu_data_parallel(self) -> None:
+        """Run get_gpu_stats() and get_gpu_processes() concurrently."""
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                futures = {
+                    pool.submit(self.get_gpu_stats): 'stats',
+                    pool.submit(self.get_gpu_processes): 'processes',
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception:
+                        # Errors handled inside each method
+                        pass
+        except KeyboardInterrupt:
+            raise
     
     def draw_bar(
             self, stdscr, y: int, x: int, percent: float, width: int, color_pair: int
@@ -351,6 +393,76 @@ class TermMon:
                 stdscr.addstr(y, x + filled, '░' * empty)
         except curses.error:
             pass
+    
+    def _show_help(self, stdscr) -> None:
+        """Show a styled help popup (white-on-blue, blocking until key press)."""
+        # Draw the dashboard underneath first
+        self.draw(stdscr)
+        
+        h, w = stdscr.getmaxyx()
+        box_w = min(36, w - 2)
+        box_h = 9
+        
+        start_y = max(0, (h - box_h) // 2)
+        start_x = max(0, (w - box_w) // 2)
+        
+        popup_attr = curses.color_pair(COLOR_POPUP)  # White on blue
+        
+        try:
+            stdscr.nodelay(False)  # Block on getch
+            
+            # Draw colored background box
+            for row in range(box_h):
+                stdscr.attron(popup_attr)
+                stdscr.addnstr(start_y + row, start_x, " " * box_w, box_w)
+            stdscr.attroff(popup_attr)
+            
+            # Draw border
+            stdscr.attron(popup_attr)
+            stdscr.addnstr(start_y, start_x, "+" + "-" * (box_w - 2) + "+", box_w)
+            stdscr.addnstr(start_y + box_h - 1, start_x, "+" + "-" * (box_w - 2) + "+", box_w)
+            for row in range(1, box_h - 1):
+                stdscr.addnstr(start_y + row, start_x, "|", 1)
+                stdscr.addnstr(start_y + row, start_x + box_w - 1, "|", 1)
+            stdscr.attroff(popup_attr)
+            
+            # Title - yellow bold on blue
+            title = " KEYBINDINGS "
+            title_x = start_x + (box_w - len(title)) // 2
+            stdscr.attron(curses.color_pair(COLOR_SWAP) | curses.A_BOLD)
+            stdscr.addnstr(start_y + 1, title_x, title, box_w)
+            stdscr.attroff(curses.color_pair(COLOR_SWAP) | curses.A_BOLD)
+            
+            # Divider
+            stdscr.attron(popup_attr)
+            stdscr.addnstr(start_y + 2, start_x + 1, "-" * (box_w - 2), box_w - 2)
+            stdscr.attroff(popup_attr)
+            
+            # Help lines - white on blue background
+            help_lines = [
+                " q  - Quit",
+                " r  - Refresh now",
+                " h  - Show help (this)",
+            ]
+            for i, line in enumerate(help_lines):
+                pad = " " + line.ljust(box_w - 3)
+                stdscr.attron(popup_attr)
+                stdscr.addnstr(start_y + 3 + i, start_x + 1, pad, box_w - 2)
+                stdscr.attroff(popup_attr)
+            
+            # Footer prompt
+            prompt = " Press any key ".center(box_w - 2)
+            stdscr.attron(popup_attr)
+            stdscr.addnstr(start_y + box_h - 2, start_x + 1, prompt, box_w - 2)
+            stdscr.attroff(popup_attr)
+            
+            stdscr.refresh()
+            stdscr.getch()  # Block until key press
+        except curses.error:
+            pass
+        
+        # Restore nodelay for main loop
+        stdscr.nodelay(True)
     
     def _wrap_command(self, cmd: str, width: int) -> List[str]:
         """
@@ -901,10 +1013,14 @@ class TermMon:
         curses.init_pair(COLOR_VRAM, curses.COLOR_MAGENTA, -1)
         curses.init_pair(COLOR_ERROR, curses.COLOR_RED, -1)
         curses.init_pair(COLOR_PROCESS, curses.COLOR_BLUE, -1)
+        curses.init_pair(COLOR_POPUP, curses.COLOR_WHITE, curses.COLOR_BLUE)  # White on blue
         
         curses.cbreak()
         stdscr.keypad(True)
         stdscr.nodelay(True)
+        
+        # Handle terminal resize
+        signal.signal(signal.SIGWINCH, self._on_resize)
         
         self.update_stats()
         time.sleep(0.5)
@@ -915,6 +1031,16 @@ class TermMon:
         try:
             while self.running:
                 current_time = time.time()
+                
+                # Handle terminal resize
+                if self._resized:
+                    self._resized = False
+                    try:
+                        curses.update_lines_cols()
+                    except (OSError, AttributeError):
+                        pass  # Some platforms don't support update_lines_cols
+                    self.update_stats()
+                    last_refresh = current_time  # Force refresh on resize
                 
                 if current_time - last_refresh >= 2:
                     self.update_stats()
@@ -929,19 +1055,7 @@ class TermMon:
                 elif key == ord('r') or key == ord('R'):
                     self.update_stats()
                 elif key == ord('h') or key == ord('H'):
-                    try:
-                        help_y = max(0, (curses.LINES - 9) // 2)
-                        help_x = max(0, (curses.COLS - 30) // 2)
-                        stdscr.addstr(help_y, help_x, "╔════════════════════════════╗")
-                        stdscr.addstr(help_y + 1, help_x, "║        KEYBINDINGS         ║")
-                        stdscr.addstr(help_y + 2, help_x, "║═══════════════════════════║")
-                        stdscr.addstr(help_y + 3, help_x, "║ q  - Quit                  ║")
-                        stdscr.addstr(help_y + 4, help_x, "║ r  - Refresh now           ║")
-                        stdscr.addstr(help_y + 5, help_x, "║ h  - Show help (this)      ║")
-                        stdscr.addstr(help_y + 6, help_x, "╚════════════════════════════╝")
-                    except curses.error:
-                        pass
-                    time.sleep(2)
+                    self._show_help(stdscr)
                 
                 time.sleep(0.05)
         finally:

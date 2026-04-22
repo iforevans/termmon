@@ -120,6 +120,25 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.6.2 (2026-04-22)
+- **Help popup overhaul**: Styled popup matching termepub pattern
+  - White-on-blue colored background (new `COLOR_POPUP` pair)
+  - `+`/`-`/`|` border chars with popup color
+  - Yellow bold title on blue background
+  - Blocking `getch()` — stays up until user presses any key
+  - Dashboard drawn underneath first so it's ready when dismissed
+  - `stdscr.refresh()` called explicitly (fixes popup not rendering)
+  - `nodelay` toggled off/on around the blocking key wait
+
+### v1.6.1 (2026-04-22)
+- **Code quality pass**: Comprehensive fixes from systematic code review
+  - Removed unused `LABEL_WIDTH` constant (dead code)
+  - Fixed help popup box chars: single-line (`┌┐└┘`) to match rest of UI (was mixed double-line `╔╗╚╝`)
+  - Fixed `except Exception` swallowing `KeyboardInterrupt` in 3 locations (clean Ctrl+C exit)
+  - Cached core count in `__init__` (reads `/proc/cpuinfo` once instead of every refresh cycle)
+  - Added `SIGWINCH` handler for graceful terminal resize (forces full redraw)
+  - Parallelized `nvidia-smi` calls: GPU stats and GPU processes now query concurrently via `concurrent.futures` (faster refresh on multi-GPU systems)
+
 ### v1.6.0 (2026-04-22)
 - **Major command wrapping overhaul**: Fixed word truncation, unnecessary line breaks, and path splitting
   - Extracted `_wrap_command()` into a dedicated method (4-phase pipeline)
