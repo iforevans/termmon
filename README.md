@@ -120,6 +120,12 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.6.3 (2026-05-05)
+- **iPad/narrow-terminal GPU process layout**: Metadata now appears on its own line and command lines get nearly the full box width
+  - Replaced the old wide `PID | USER | GPU MEM | HOST MEM | Command` row that consumed 50 columns before the command
+  - Command wrapping now has ~72 chars in an 80-column box instead of ~29 chars
+  - Keeps GPU/HOST memory visible without sacrificing the command line
+
 ### v1.6.2 (2026-04-22)
 - **Help popup overhaul**: Styled popup matching termepub pattern
   - White-on-blue colored background (new `COLOR_POPUP` pair)

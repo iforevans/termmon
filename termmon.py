@@ -45,7 +45,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.6.2"
+__version__ = "1.6.3"
 __author__ = "Ifor Evans"
 
 
@@ -856,8 +856,11 @@ class TermMon:
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
             
-            # Column headings
-            heading = "│ PID    | USER       | GPU MEM    | HOST MEM   | Command"
+            # Compact two-line process layout.
+            # Old layout burned 50 columns before the command (PID | USER | GPU | HOST),
+            # leaving only ~29 chars on 80-col/iPad terminals. Put metadata on its own
+            # line and give command lines almost the full box width instead.
+            heading = "│ PID/USER/GPU/HOST on first line; command gets full width below"
             stdscr.addstr(y, x, (heading.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
             y += 1
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
@@ -868,12 +871,9 @@ class TermMon:
                 stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
                 y += 1
             else:
-                # Calculate column widths for wrapping
-                # Column widths for process display
-                # First line prefix: "│ PID(6) | USER(10) | MEM(10) | MEM(10) | " = 50 chars
-                # Continuation indent: "│" + 49 spaces = 50 chars
-                # Actual command space = BOX_WIDTH - 50 (prefix) - 1 (closing │) = BOX_WIDTH - 51
-                cmd_width = BOX_WIDTH - 51
+                cmd_prefix = "│ CMD: "
+                cmd_indent = "│      "
+                cmd_width = max(10, BOX_WIDTH - len(cmd_prefix) - 1)  # keep room for closing │
                 
                 for proc in self.gpu_processes:
                     if y >= height - 3:
@@ -881,7 +881,7 @@ class TermMon:
                     
                     mem_mb = proc['mem_used']
                     host_mem_mb = proc['host_mem']
-                    user = proc['user'][:10]
+                    user = proc['user'][:18]
                     
                     # Get command (use cmdline if available)
                     if proc.get('cmdline'):
@@ -894,40 +894,21 @@ class TermMon:
                     else:
                         full_cmd = os.path.basename(proc['process_name'].split(',')[0].strip())
 
-                    # Word-wrap the command
+                    meta = f"│ PID {proc['pid']}  USER {user}  GPU {mem_mb:.0f}MB  HOST {host_mem_mb:.0f}MB"
+                    stdscr.addstr(y, x, (meta.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
+                    y += 1
+
+                    # Word-wrap the command across nearly the full box width.
                     lines = self._wrap_command(full_cmd, cmd_width)
-                    
-                    # Draw first line with all columns
-                    if lines and y < height - 3:
-                        line = f"│ {proc['pid']:6} | {user:10} | {mem_mb:8.0f}MB | {host_mem_mb:8.0f}MB | {lines[0]}"
+                    for idx, command_part in enumerate(lines):
+                        if y >= height - 3:
+                            break
+                        prefix = cmd_prefix if idx == 0 else cmd_indent
+                        line = f"{prefix}{command_part}"
                         stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
                         y += 1
                     
-                    # Draw continuation lines (just the command, indented)
-                    for continuation in lines[1:]:
-                        if y >= height - 3:
-                            break
-                        # Just show the continuation, aligned with command column
-                        # Format: "│ PID(6) | USER(10) | GPU_MEM(8)+MB(2) | HOST_MEM(8)+MB(2) | CMD"
-                        # Breakdown: │(1) + space(1) + PID(6) + " | "(3) + USER(10) + " | "(3) + MEM(8) + "MB"(2) + " | "(3) + MEM(8) + "MB"(2) + " | "(3) = 50
-                        indent = "│" + " " * 49  # 49 spaces to align with command column start (after │)
-                        # Ensure continuation doesn't exceed available width
-                        avail_width = BOX_WIDTH - 50  # After indent and closing │
-                        if len(continuation) > avail_width:
-                            # Split continuation into multiple lines if needed
-                            chunks = [continuation[i:i+avail_width] for i in range(0, len(continuation), avail_width)]
-                            for chunk_idx, chunk in enumerate(chunks):
-                                if y >= height - 3:
-                                    break
-                                line = f"{indent}{chunk}"
-                                stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
-                                y += 1
-                        else:
-                            line = f"{indent}{continuation}"
-                            stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
-                            y += 1
-                    
-                    # Add blank separator line between processes (if space)
+                    # Add separator line between processes (if space)
                     if y < height - 3:
                         line = "│" + " " * (BOX_WIDTH - 2) + "│"
                         stdscr.addstr(y, x, line)
