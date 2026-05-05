@@ -45,7 +45,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.6.8"
+__version__ = "1.6.9"
 __author__ = "Ifor Evans"
 
 
@@ -881,13 +881,21 @@ class TermMon:
                     else:
                         full_cmd = os.path.basename(proc['process_name'].split(',')[0].strip())
 
-                    meta = f"│ {proc['pid']:<6} {mem_mb:>6.0f}M {host_mem_mb:>6.0f}M {user:<18}"
-                    stdscr.addstr(y, x, (meta.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
+                    # Start the command on the same row as the compact metadata.
+                    # The first command fragment starts under the PROCESSES header;
+                    # continuation lines then use the full process box width.
+                    meta_prefix = f"│ {proc['pid']:<6} {mem_mb:>6.0f}M {host_mem_mb:>6.0f}M {user:<18} "
+                    first_cmd_width = max(10, BOX_WIDTH - len(meta_prefix) - 1)  # keep room for closing │
+                    full_width_lines = self._wrap_command(full_cmd, cmd_width)
+                    first_cmd_parts = self._wrap_command(full_width_lines[0], first_cmd_width) if full_width_lines else [""]
+                    inline_cmd = first_cmd_parts[0]
+                    continuation_lines = first_cmd_parts[1:] + full_width_lines[1:]
+
+                    line = f"{meta_prefix}{inline_cmd}"
+                    stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
                     y += 1
 
-                    # Word-wrap the command across almost the entire box width.
-                    lines = self._wrap_command(full_cmd, cmd_width)
-                    for command_part in lines:
+                    for command_part in continuation_lines:
                         if y >= height - 3:
                             break
                         line = f"{cmd_prefix}{command_part}"

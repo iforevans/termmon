@@ -120,6 +120,11 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.6.9 (2026-05-05)
+- **Inline GPU process command start**: First command fragment now starts on the same row as PID/GPU/HOST/USER metadata under the `PROCESSES` header
+  - Saves the remaining wasted vertical row in the GPU process section
+  - Continuation command lines still wrap across the full process box width
+
 ### v1.6.8 (2026-05-05)
 - **CPU tile vertical compaction**: Moved overall CPU percentage into the CPU title line after the core count
   - Removes the separate `Overall` CPU row, freeing one vertical row for the GPU process command section
