@@ -120,6 +120,12 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.6.5 (2026-05-05)
+- **Compact GPU process header restored**: Shows PID, GPU memory, host memory, and user above each command while preserving full-width command wrapping
+  - Header: `PID GPU MEM HOST MEM USER`
+  - Process summary appears before the command line, so key resource data is visible at a glance
+  - Command parameters still wrap across almost the full box width
+
 ### v1.6.4 (2026-05-05)
 - **Command-first GPU process layout**: Command line parameters now render before metadata so they remain visible on short iPad terminals
   - Removed the verbose helper heading that wasted vertical space
