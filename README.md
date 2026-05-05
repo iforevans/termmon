@@ -120,6 +120,11 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.6.7 (2026-05-05)
+- **Aligned compact GPU process columns**: PID/GPU/HOST/USER headers now use the same fixed-width columns as the metadata row below
+  - Keeps a single header/title row to avoid stealing command parameter space
+  - Keeps command parameters full-width below the aligned metadata row
+
 ### v1.6.6 (2026-05-05)
 - **iPad GPU process rows compacted again**: moved the column labels into the GPU process title and removed the extra header/separator pair
   - Keeps PID/GPU/HOST/USER visible in one compact process row

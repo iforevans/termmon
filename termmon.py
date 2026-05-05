@@ -45,7 +45,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.6.6"
+__version__ = "1.6.7"
 __author__ = "Ifor Evans"
 
 
@@ -851,7 +851,8 @@ class TermMon:
             # Box header
             stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
             y += 1
-            stdscr.addstr(y, x, "│ GPU PROCESSES | PID GPU HOST USER".ljust(BOX_WIDTH - 1) + "│")
+            header = f"│ {'PID':<6} {'GPU':>7} {'HOST':>7} {'USER':<18} PROCESSES"
+            stdscr.addstr(y, x, header.ljust(BOX_WIDTH - 1)[:BOX_WIDTH-1] + "│")
             y += 1
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
@@ -886,7 +887,7 @@ class TermMon:
                     else:
                         full_cmd = os.path.basename(proc['process_name'].split(',')[0].strip())
 
-                    meta = f"│ {proc['pid']} {mem_mb:.0f}M {host_mem_mb:.0f}M {user}"
+                    meta = f"│ {proc['pid']:<6} {mem_mb:>6.0f}M {host_mem_mb:>6.0f}M {user:<18}"
                     stdscr.addstr(y, x, (meta.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
                     y += 1
 
