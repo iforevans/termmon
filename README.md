@@ -120,6 +120,12 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.6.4 (2026-05-05)
+- **Command-first GPU process layout**: Command line parameters now render before metadata so they remain visible on short iPad terminals
+  - Removed the verbose helper heading that wasted vertical space
+  - Full command wraps across almost the entire GPU process box
+  - PID/user/GPU/HOST metadata appears after the command instead of pushing it down
+
 ### v1.6.3 (2026-05-05)
 - **iPad/narrow-terminal GPU process layout**: Metadata now appears on its own line and command lines get nearly the full box width
   - Replaced the old wide `PID | USER | GPU MEM | HOST MEM | Command` row that consumed 50 columns before the command

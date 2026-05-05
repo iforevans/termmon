@@ -45,7 +45,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.6.3"
+__version__ = "1.6.4"
 __author__ = "Ifor Evans"
 
 
@@ -856,23 +856,15 @@ class TermMon:
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
             
-            # Compact two-line process layout.
-            # Old layout burned 50 columns before the command (PID | USER | GPU | HOST),
-            # leaving only ~29 chars on 80-col/iPad terminals. Put metadata on its own
-            # line and give command lines almost the full box width instead.
-            heading = "│ PID/USER/GPU/HOST on first line; command gets full width below"
-            stdscr.addstr(y, x, (heading.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
-            y += 1
-            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
-            y += 1
-            
             if not self.gpu_processes:
                 line = "│ No active GPU compute processes"
                 stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
                 y += 1
             else:
-                cmd_prefix = "│ CMD: "
-                cmd_indent = "│      "
+                # Command-first layout for narrow/iPad terminals.
+                # If vertical space is tight, command parameters must be the first thing
+                # visible. Metadata is useful, but secondary.
+                cmd_prefix = "│ "
                 cmd_width = max(10, BOX_WIDTH - len(cmd_prefix) - 1)  # keep room for closing │
                 
                 for proc in self.gpu_processes:
@@ -894,18 +886,19 @@ class TermMon:
                     else:
                         full_cmd = os.path.basename(proc['process_name'].split(',')[0].strip())
 
-                    meta = f"│ PID {proc['pid']}  USER {user}  GPU {mem_mb:.0f}MB  HOST {host_mem_mb:.0f}MB"
-                    stdscr.addstr(y, x, (meta.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
-                    y += 1
-
-                    # Word-wrap the command across nearly the full box width.
+                    # Word-wrap the command across almost the entire box width.
                     lines = self._wrap_command(full_cmd, cmd_width)
-                    for idx, command_part in enumerate(lines):
+                    for command_part in lines:
                         if y >= height - 3:
                             break
-                        prefix = cmd_prefix if idx == 0 else cmd_indent
-                        line = f"{prefix}{command_part}"
+                        line = f"{cmd_prefix}{command_part}"
                         stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
+                        y += 1
+
+                    # Metadata comes after the command so it cannot push params off-screen.
+                    if y < height - 3:
+                        meta = f"│ PID {proc['pid']}  USER {user}  GPU {mem_mb:.0f}MB  HOST {host_mem_mb:.0f}MB"
+                        stdscr.addstr(y, x, (meta.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
                         y += 1
                     
                     # Add separator line between processes (if space)
