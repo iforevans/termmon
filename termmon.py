@@ -45,7 +45,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.6.10"
+__version__ = "1.7.0"
 __author__ = "Ifor Evans"
 
 
@@ -86,6 +86,7 @@ class TermMon:
         self.last_per_core_stats: Dict[int, Tuple[int, int]] = {}
         self.core_count: int = self._get_core_count()
         self._resized: bool = False  # SIGWINCH flag
+        self.process_scroll_x: int = 0  # Horizontal scroll offset for nvtop-style process table
     
     def _on_resize(self, signum: int, frame: Any) -> None:
         """Handle terminal resize (SIGWINCH)."""
@@ -283,6 +284,7 @@ class TermMon:
                             # Enrich with user and host memory from /proc
                             user = "unknown"
                             host_mem = 0.0
+                            cpu_pct = 0.0
                             cmdline = ""
                             try:
                                 # Get UID and RSS from /proc/[pid]/status (single read)
@@ -306,6 +308,20 @@ class TermMon:
                                         cmdline = f.read().replace('\0', ' ').strip()
                                 except (FileNotFoundError, PermissionError, IOError):
                                     pass
+                                # Get current CPU percentage from ps. nvidia-smi compute
+                                # query does not expose per-process CPU, but nvtop-style
+                                # rows need a CPU column.
+                                try:
+                                    ps_result = subprocess.run(
+                                        ['ps', '-p', str(pid), '-o', '%cpu='],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=1
+                                    )
+                                    if ps_result.returncode == 0 and ps_result.stdout.strip():
+                                        cpu_pct = float(ps_result.stdout.strip().split()[0])
+                                except (ValueError, subprocess.SubprocessError, FileNotFoundError):
+                                    pass
                             except (FileNotFoundError, PermissionError, IOError):
                                 # Process may have exited or no permission
                                 pass
@@ -315,6 +331,7 @@ class TermMon:
                                 'user': user,
                                 'mem_used': mem_used,
                                 'host_mem': host_mem,
+                                'cpu_pct': cpu_pct,
                                 'process_name': process_name,
                                 'cmdline': cmdline
                             })
@@ -401,7 +418,7 @@ class TermMon:
         
         h, w = stdscr.getmaxyx()
         box_w = min(36, w - 2)
-        box_h = 9
+        box_h = 10
         
         start_y = max(0, (h - box_h) // 2)
         start_x = max(0, (w - box_w) // 2)
@@ -443,6 +460,7 @@ class TermMon:
                 " q  - Quit",
                 " r  - Refresh now",
                 " h  - Show help (this)",
+                " ←→ - Scroll process table",
             ]
             for i, line in enumerate(help_lines):
                 pad = " " + line.ljust(box_w - 3)
@@ -826,9 +844,64 @@ class TermMon:
         
         return y
     
+    def _process_command(self, proc: Dict[str, Any]) -> str:
+        """Return the display command for a GPU process."""
+        if proc.get('cmdline'):
+            parts = proc['cmdline'].split()
+            if parts:
+                base_name = os.path.basename(parts[0])
+                return base_name + (' ' + ' '.join(parts[1:]) if len(parts) > 1 else '')
+        return os.path.basename(proc.get('process_name', 'unknown').split(',')[0].strip())
+
+    def _gpu_process_fixed_header(self) -> str:
+        """Fixed nvtop-style GPU process table columns before Command."""
+        return (
+            f"{'PID':<7} {'USER':<8} {'DEV':<3} {'TYPE':<4} "
+            f"{'GPU':>5} {'GPU MEM':>8} {'CPU':>6} {'HOST MEM':>8} "
+        )
+
+    def _gpu_process_table_header(self) -> str:
+        """nvtop-style GPU process table header."""
+        return self._gpu_process_fixed_header() + "Command"
+
+    def _gpu_process_fixed_prefix(self, proc: Dict[str, Any]) -> str:
+        """Format fixed nvtop-style GPU process columns before Command."""
+        pid = proc.get('pid', 0)
+        user = str(proc.get('user', 'unknown'))[:8]
+        dev = str(proc.get('dev', '0'))[:3]
+        proc_type = str(proc.get('type', 'C'))[:4]
+        gpu_pct = proc.get('gpu_pct')
+        gpu_text = f"{gpu_pct:5.1f}%" if isinstance(gpu_pct, (int, float)) else "--"
+        gpu_mem = f"{proc.get('mem_used', 0):.0f}M"
+        cpu_text = f"{proc.get('cpu_pct', 0.0):5.1f}%"
+        host_mem = f"{proc.get('host_mem', 0):.0f}M"
+        return (
+            f"{pid:<7} {user:<8} {dev:<3} {proc_type:<4} "
+            f"{gpu_text:>5} {gpu_mem:>8} {cpu_text:>6} {host_mem:>8} "
+        )
+
+    def _gpu_process_table_row(self, proc: Dict[str, Any]) -> str:
+        """Format one nvtop-style GPU process row without horizontal clipping."""
+        return self._gpu_process_fixed_prefix(proc) + self._process_command(proc)
+
+    def _draw_scrolled_process_line(self, stdscr, y: int, x: int, fixed: str, command: str, width: int) -> None:
+        """Draw one bordered process table line with fixed columns and scrolled command."""
+        view_width = max(1, width - 2)
+        fixed_visible = fixed[:view_width]
+        cmd_width = max(0, view_width - len(fixed_visible))
+        scroll = max(0, self.process_scroll_x)
+        visible = fixed_visible + command[scroll:scroll + cmd_width]
+        stdscr.addstr(y, x, "│" + visible.ljust(view_width) + "│")
+
+    def _max_process_scroll(self) -> int:
+        """Maximum horizontal scroll offset for the process table command column."""
+        view_width = max(1, BOX_WIDTH - 2)
+        cmd_width = max(1, view_width - len(self._gpu_process_fixed_header()))
+        return max(0, max((len(self._process_command(proc)) for proc in self.gpu_processes), default=0) - cmd_width)
+
     def _draw_gpu_processes_section(self, stdscr, y: int, x: int, height: int) -> int:
         """
-        Draw the GPU processes section (top N by VRAM usage).
+        Draw the GPU processes section as an nvtop-style horizontally scrollable table.
         
         Args:
             stdscr: Curses window
@@ -840,71 +913,36 @@ class TermMon:
             Next y position after the section
         """
         try:
+            self.process_scroll_x = min(max(0, self.process_scroll_x), self._max_process_scroll())
+
             # Box header
             stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
             y += 1
-            header = f"│ {'PID':<6} {'GPU':>7} {'HOST':>7} {'USER':<18} PROCESSES"
-            stdscr.addstr(y, x, header.ljust(BOX_WIDTH - 1)[:BOX_WIDTH-1] + "│")
+
+            title = f"│ GPU PROCESSES  ←/→ scroll {self.process_scroll_x}"
+            stdscr.addstr(y, x, title.ljust(BOX_WIDTH - 1)[:BOX_WIDTH-1] + "│")
             y += 1
+
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
+
+            stdscr.addstr(y, x, "│" + self._gpu_process_table_header()[:BOX_WIDTH-2].ljust(BOX_WIDTH - 2) + "│")
+            y += 1
+
+            if y < height - 3:
+                stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+                y += 1
             
             if not self.gpu_processes:
-                line = "│ No active GPU compute processes"
-                stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
-                y += 1
+                if y < height - 3:
+                    self._draw_scrolled_process_line(stdscr, y, x, "", "No active GPU compute processes", BOX_WIDTH)
+                    y += 1
             else:
-                # One compact metadata row per process, then full-width command lines.
-                # The title line is the only header; extra header/separator rows hide
-                # late command flags on short iPad terminals.
-                cmd_prefix = "│ "
-                cmd_width = max(10, BOX_WIDTH - len(cmd_prefix) - 1)  # keep room for closing │
-                
-                for idx, proc in enumerate(self.gpu_processes):
+                for proc in self.gpu_processes:
                     if y >= height - 3:
                         break  # Don't draw off-screen
-                    
-                    mem_mb = proc['mem_used']
-                    host_mem_mb = proc['host_mem']
-                    user = proc['user'][:18]
-                    
-                    # Get command (use cmdline if available)
-                    if proc.get('cmdline'):
-                        parts = proc['cmdline'].split()
-                        if parts:
-                            base_name = os.path.basename(parts[0])
-                            full_cmd = base_name + ' ' + ' '.join(parts[1:])
-                        else:
-                            full_cmd = "unknown"
-                    else:
-                        full_cmd = os.path.basename(proc['process_name'].split(',')[0].strip())
-
-                    # Start the command on the same row as the compact metadata.
-                    # The first command fragment starts under the PROCESSES header;
-                    # continuation lines then use the full process box width.
-                    meta_prefix = f"│ {proc['pid']:<6} {mem_mb:>6.0f}M {host_mem_mb:>6.0f}M {user:<18} "
-                    first_cmd_width = max(10, BOX_WIDTH - len(meta_prefix) - 1)  # keep room for closing │
-                    full_width_lines = self._wrap_command(full_cmd, cmd_width)
-                    first_cmd_parts = self._wrap_command(full_width_lines[0], first_cmd_width) if full_width_lines else [""]
-                    inline_cmd = first_cmd_parts[0]
-                    continuation_lines = first_cmd_parts[1:] + full_width_lines[1:]
-
-                    line = f"{meta_prefix}{inline_cmd}"
-                    stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
+                    self._draw_scrolled_process_line(stdscr, y, x, self._gpu_process_fixed_prefix(proc), self._process_command(proc), BOX_WIDTH)
                     y += 1
-
-                    for command_part in continuation_lines:
-                        if y >= height - 3:
-                            break
-                        line = f"{cmd_prefix}{command_part}"
-                        stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
-                        y += 1
-                    
-                    # Add separator only between processes, never after the last one.
-                    if idx < len(self.gpu_processes) - 1 and y < height - 3:
-                        line = "│" + " " * (BOX_WIDTH - 2) + "│"
-                        stdscr.addstr(y, x, line)
-                        y += 1
             
             # Box footer
             stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
@@ -954,7 +992,7 @@ class TermMon:
         
         # Footer
         try:
-            footer = f" Refresh: {REFRESH_INTERVAL}s | q:quit r:refresh h:help "
+            footer = f" Refresh: {REFRESH_INTERVAL}s | q:quit r:refresh h:help ←/→:process scroll "
             stdscr.attron(curses.A_REVERSE)
             stdscr.addstr(height - 1, 0, footer[:width-1].ljust(width-1)[:width-1])
             stdscr.attroff(curses.A_REVERSE)
@@ -974,6 +1012,7 @@ class TermMon:
             q/Q - Quit
             r/R - Force refresh
             h/H - Show help
+            ←/→ - Horizontally scroll GPU process table command column
         """
         stdscr = curses.initscr()
         
@@ -1029,6 +1068,10 @@ class TermMon:
                     self.update_stats()
                 elif key == ord('h') or key == ord('H'):
                     self._show_help(stdscr)
+                elif key == curses.KEY_RIGHT:
+                    self.process_scroll_x = min(self._max_process_scroll(), self.process_scroll_x + 16)
+                elif key == curses.KEY_LEFT:
+                    self.process_scroll_x = max(0, self.process_scroll_x - 16)
                 
                 time.sleep(0.05)
         finally:

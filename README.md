@@ -120,6 +120,12 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.7.0 (2026-05-05)
+- **nvtop-style GPU process table**: Replaced wrapped multi-line process commands with a single-line table:
+  - `PID USER DEV TYPE GPU GPU MEM CPU HOST MEM Command`
+  - Left/right arrow keys horizontally scroll the command column to reveal long arguments
+  - Fixed metadata columns stay visible while the command viewport scrolls
+
 ### v1.6.10 (2026-05-05)
 - **CPU row rendering stabilized**: Per-core CPU rows are now composed as complete bordered strings and written once per row
   - Avoids partial curses writes/draw_bar positioning drift on narrow/mobile terminals
