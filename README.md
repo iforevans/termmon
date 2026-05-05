@@ -120,6 +120,11 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.7.1 (2026-05-05)
+- **CPU bars compacted and recolored**: Per-core rows now put the utilization bar directly after the `Core n:` label, with the percentage after the bar
+  - Restores cyan/bold filled CPU bar segments while keeping stable whole-row rendering
+  - Preserves two-column CPU layout and Core 10+ alignment without the large label-to-bar gap
+
 ### v1.7.0 (2026-05-05)
 - **nvtop-style GPU process table**: Replaced wrapped multi-line process commands with a single-line table:
   - `PID USER DEV TYPE GPU GPU MEM CPU HOST MEM Command`

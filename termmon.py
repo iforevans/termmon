@@ -45,7 +45,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.7.0"
+__version__ = "1.7.1"
 __author__ = "Ifor Evans"
 
 
@@ -721,38 +721,59 @@ class TermMon:
             col_width = (content_width - gap_width) // 2
             right_width = content_width - gap_width - col_width
 
-            def bar_text(percent: float, width: int) -> str:
+            def bar_parts(percent: float, width: int) -> Tuple[str, int]:
                 pct = max(0, min(100, percent))
                 if pct > 0:
                     filled = max(1, int(pct / 100.0 * width))
                 else:
                     filled = 0
                 filled = min(filled, width)
-                return "█" * filled + "░" * (width - filled)
+                return "█" * filled + "░" * (width - filled), filled
 
-            def core_text(core_id: int, core_pct: float, width: int) -> str:
-                label = f"Core {core_id}:".ljust(11) + f"{core_pct:6.1f}% "
-                bar_width = max(1, width - len(label))
-                text = label + bar_text(core_pct, bar_width)
-                return text[:width].ljust(width)
+            # Keep labels aligned for Core 10+ but do not waste a whole chunk of
+            # spaces before the bar. The percentage moves after the bar, so the
+            # utilization graphic starts almost immediately after `Core n:`.
+            label_width = len(f"Core {max(0, core_count - 1)}:") + 1
+
+            def core_cell(core_id: int, core_pct: float, width: int) -> Tuple[str, int, int]:
+                label = f"Core {core_id}:".ljust(label_width)
+                pct_text = f" {core_pct:5.1f}%"
+                bar_width = max(1, width - len(label) - len(pct_text))
+                bar, filled = bar_parts(core_pct, bar_width)
+                text = label + bar + pct_text
+                return text[:width].ljust(width), len(label), filled
 
             for i in range(mid_point):
                 if y >= height - 3:
                     break  # Don't draw off-screen
 
                 left = "".ljust(col_width)
+                left_bar_start = 0
+                left_filled = 0
                 if i < len(per_core):
                     core_id, core_pct = per_core[i]
-                    left = core_text(core_id, core_pct, col_width)
+                    left, left_bar_start, left_filled = core_cell(core_id, core_pct, col_width)
 
                 right = "".ljust(right_width)
+                right_bar_start = 0
+                right_filled = 0
                 right_idx = i + mid_point
                 if right_idx < len(per_core):
                     core_id, core_pct = per_core[right_idx]
-                    right = core_text(core_id, core_pct, right_width)
+                    right, right_bar_start, right_filled = core_cell(core_id, core_pct, right_width)
 
                 line = "│" + left + " " * gap_width + right + "│"
                 stdscr.addstr(y, x, line[:BOX_WIDTH])
+
+                # Restore colored CPU utilization bars without returning to the
+                # old many-position write pattern. Draw the full stable row once,
+                # then overlay only the filled bar blocks with the CPU color.
+                cpu_attr = curses.color_pair(COLOR_CPU) | curses.A_BOLD
+                if left_filled > 0:
+                    stdscr.addstr(y, x + 1 + left_bar_start, "█" * left_filled, cpu_attr)
+                if right_filled > 0:
+                    right_x = x + 1 + col_width + gap_width + right_bar_start
+                    stdscr.addstr(y, right_x, "█" * right_filled, cpu_attr)
                 y += 1
             
             # Box footer
