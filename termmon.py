@@ -45,7 +45,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.6.5"
+__version__ = "1.6.6"
 __author__ = "Ifor Evans"
 
 
@@ -851,7 +851,7 @@ class TermMon:
             # Box header
             stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
             y += 1
-            stdscr.addstr(y, x, "│ GPU PROCESSES (nvtop-style)".ljust(BOX_WIDTH - 1) + "│")
+            stdscr.addstr(y, x, "│ GPU PROCESSES | PID GPU HOST USER".ljust(BOX_WIDTH - 1) + "│")
             y += 1
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
@@ -861,19 +861,13 @@ class TermMon:
                 stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
                 y += 1
             else:
-                # Compact header + process summary, then full-width command lines.
-                # This keeps PID/GPU/HOST visible while still giving command params
-                # almost the whole iPad/narrow-terminal width.
-                header = "│ PID     GPU MEM  HOST MEM  USER"
-                stdscr.addstr(y, x, (header.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
-                y += 1
-                stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
-                y += 1
-
+                # One compact metadata row per process, then full-width command lines.
+                # The title line is the only header; extra header/separator rows hide
+                # late command flags on short iPad terminals.
                 cmd_prefix = "│ "
                 cmd_width = max(10, BOX_WIDTH - len(cmd_prefix) - 1)  # keep room for closing │
                 
-                for proc in self.gpu_processes:
+                for idx, proc in enumerate(self.gpu_processes):
                     if y >= height - 3:
                         break  # Don't draw off-screen
                     
@@ -892,7 +886,7 @@ class TermMon:
                     else:
                         full_cmd = os.path.basename(proc['process_name'].split(',')[0].strip())
 
-                    meta = f"│ {proc['pid']:<7} {mem_mb:>7.0f}M {host_mem_mb:>8.0f}M  {user}"
+                    meta = f"│ {proc['pid']} {mem_mb:.0f}M {host_mem_mb:.0f}M {user}"
                     stdscr.addstr(y, x, (meta.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
                     y += 1
 
@@ -905,8 +899,8 @@ class TermMon:
                         stdscr.addstr(y, x, (line.ljust(BOX_WIDTH - 1))[:BOX_WIDTH-1] + "│")
                         y += 1
                     
-                    # Add separator line between processes (if space)
-                    if y < height - 3:
+                    # Add separator only between processes, never after the last one.
+                    if idx < len(self.gpu_processes) - 1 and y < height - 3:
                         line = "│" + " " * (BOX_WIDTH - 2) + "│"
                         stdscr.addstr(y, x, line)
                         y += 1

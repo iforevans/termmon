@@ -120,6 +120,12 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.6.6 (2026-05-05)
+- **iPad GPU process rows compacted again**: moved the column labels into the GPU process title and removed the extra header/separator pair
+  - Keeps PID/GPU/HOST/USER visible in one compact process row
+  - Saves two vertical rows so late command flags remain visible on short terminals
+  - Removes the trailing blank separator after the last process
+
 ### v1.6.5 (2026-05-05)
 - **Compact GPU process header restored**: Shows PID, GPU memory, host memory, and user above each command while preserving full-width command wrapping
   - Header: `PID GPU MEM HOST MEM USER`
