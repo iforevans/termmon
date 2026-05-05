@@ -45,7 +45,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.6.9"
+__version__ = "1.6.10"
 __author__ = "Ifor Evans"
 
 
@@ -694,49 +694,47 @@ class TermMon:
             # Calculate split point (half the cores in each column)
             mid_point = (core_count + 1) // 2
             
-            # Calculate column widths
-            # Left column: "│ Core N:" (11 chars) + percentage (8 chars) + bar (20 chars) = 39 chars
-            # Right column starts after that + separator
-            left_col_width = 11 + 8 + BAR_WIDTH + 2  # ~41 chars
-            right_col_start = x + left_col_width
-            
-            # Draw cores in two columns
+            # Draw cores in two columns. Build each row as one complete string
+            # instead of several positioned addstr/draw_bar calls; this avoids
+            # stale characters and cursor-position weirdness on narrow/mobile
+            # terminals where partial curses writes can visually drift.
+            content_width = BOX_WIDTH - 2
+            gap_width = 2
+            col_width = (content_width - gap_width) // 2
+            right_width = content_width - gap_width - col_width
+
+            def bar_text(percent: float, width: int) -> str:
+                pct = max(0, min(100, percent))
+                if pct > 0:
+                    filled = max(1, int(pct / 100.0 * width))
+                else:
+                    filled = 0
+                filled = min(filled, width)
+                return "█" * filled + "░" * (width - filled)
+
+            def core_text(core_id: int, core_pct: float, width: int) -> str:
+                label = f"Core {core_id}:".ljust(11) + f"{core_pct:6.1f}% "
+                bar_width = max(1, width - len(label))
+                text = label + bar_text(core_pct, bar_width)
+                return text[:width].ljust(width)
+
             for i in range(mid_point):
                 if y >= height - 3:
                     break  # Don't draw off-screen
-                
-                # Left column
+
+                left = "".ljust(col_width)
                 if i < len(per_core):
                     core_id, core_pct = per_core[i]
-                    label = f"│ Core {core_id}:".ljust(11) + f"{core_pct:6.1f}%".rjust(8)
-                    try:
-                        stdscr.addstr(y, x, label)
-                        self.draw_bar(stdscr, y, x + 11 + 8, core_pct, BAR_WIDTH, COLOR_CPU)
-                    except curses.error:
-                        pass
-                
-                # Right column (if we have enough cores)
+                    left = core_text(core_id, core_pct, col_width)
+
+                right = "".ljust(right_width)
                 right_idx = i + mid_point
                 if right_idx < len(per_core):
                     core_id, core_pct = per_core[right_idx]
-                    right_label = f"Core {core_id}:".ljust(11) + f"{core_pct:6.1f}%".rjust(8)
-                    try:
-                        stdscr.addstr(y, right_col_start, right_label)
-                        self.draw_bar(stdscr, y, right_col_start + 11 + 8, core_pct, BAR_WIDTH, COLOR_CPU)
-                        # Close the right side of the box
-                        right_end = right_col_start + 11 + 8 + BAR_WIDTH
-                        if right_end < BOX_WIDTH - 1:
-                            stdscr.addstr(y, right_end, " " * (BOX_WIDTH - 1 - right_end))
-                        stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-                    except curses.error:
-                        pass
-                else:
-                    # Just close the box if no right column
-                    try:
-                        stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
-                    except curses.error:
-                        pass
-                
+                    right = core_text(core_id, core_pct, right_width)
+
+                line = "│" + left + " " * gap_width + right + "│"
+                stdscr.addstr(y, x, line[:BOX_WIDTH])
                 y += 1
             
             # Box footer

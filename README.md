@@ -120,6 +120,11 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.6.10 (2026-05-05)
+- **CPU row rendering stabilized**: Per-core CPU rows are now composed as complete bordered strings and written once per row
+  - Avoids partial curses writes/draw_bar positioning drift on narrow/mobile terminals
+  - Keeps two-column CPU layout and overall CPU in the title
+
 ### v1.6.9 (2026-05-05)
 - **Inline GPU process command start**: First command fragment now starts on the same row as PID/GPU/HOST/USER metadata under the `PROCESSES` header
   - Saves the remaining wasted vertical row in the GPU process section
