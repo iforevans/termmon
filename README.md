@@ -42,18 +42,17 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ### Keybindings
 
-| Key | Action |
-|-----|--------|
-| `q` | Quit |
-| `r` | Manual refresh (immediate update) |
-| `h` | Show help |
+- `q` - Quit
+- `r` - Manual refresh (immediate update)
+- `h` - Show help
+- `←` / `→` - Horizontally scroll the GPU process Command column
 
 **Auto-refresh**: Every 2 seconds (no action needed)
 
 ## Display Layout
 
 ```
- termmon - System Monitor | HH:MM:SS | q:quit r:refresh h:help 
+ termmon - System Monitor | HH:MM:SS | q:quit r:refresh h:help
 ┌────────────────────────────────────────────────────────────────┐
 │ SYSTEM MEMORY                                                  │
 │────────────────────────────────────────────────────────────────│
@@ -61,11 +60,10 @@ Simply run `termmon` and watch your system resources in real-time.
 │ Swap: ██████████████████░░░░░░   2.5/4.0GB  62.5%             │
 └────────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────────┐
-│ CPU (8 cores)                                                  │
+│ CPU (8 cores, overall  23.4%)                                  │
 │────────────────────────────────────────────────────────────────│
-│ Overall:     2.4% ████░░░░░░░░░░░░░░░░░░                       │
-│ Core 0:      2.4% ████░░░░░░░░░░░░░░░░░░                       │
-│ Core 1:      0.0% ░░░░░░░░░░░░░░░░░░░░░░                       │
+│Core 0:  █████░░░░░░░░░░░░░░░░░  23.4%  Core 4:  ██░░░░░░   9.8%│
+│Core 1:  ███████░░░░░░░░░░░░░░░  31.0%  Core 5:  ███░░░░░  15.2%│
 │ ... (all cores)                                                │
 └────────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────────┐
@@ -77,9 +75,9 @@ Simply run `termmon` and watch your system resources in real-time.
 ┌────────────────────────────────────────────────────────────────┐
 │ GPU PROCESSES (nvtop-style)                                    │
 │────────────────────────────────────────────────────────────────│
-│ PID    | USER       | GPU MEM    | HOST MEM   | Command        │
+│PID     USER     DEV TYPE   GPU  GPU MEM    CPU HOST MEM Command│
 │────────────────────────────────────────────────────────────────│
-│  86775 | iforevans  |   39506MB |    7768MB | /home/iforevans/...│
+│86775   iforevan 0   C       --   39506M  12.3%    7768M llama-s│
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -119,6 +117,10 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
+
+### v1.7.2 (2026-05-05)
+- **Documentation and terminal compatibility cleanup**: README and module docstring now document the current `←` / `→` GPU process scroll keys and v1.7 CPU/process layouts
+  - Wraps `curses.curs_set(0)` so terminals that cannot hide the cursor do not crash the dashboard
 
 ### v1.7.1 (2026-05-05)
 - **CPU bars compacted and recolored**: Per-core rows now put the utilization bar directly after the `Core n:` label, with the percentage after the bar

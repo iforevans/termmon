@@ -26,6 +26,7 @@ Keybindings:
     q - Quit
     r - Refresh now
     h - Show help
+    ←/→ - Scroll GPU process command column
 
 Author:
     Ifor Evans (@iforevans)
@@ -45,7 +46,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.7.1"
+__version__ = "1.7.2"
 __author__ = "Ifor Evans"
 
 
@@ -975,7 +976,10 @@ class TermMon:
     
     def draw(self, stdscr) -> None:
         """Draw the complete UI with all monitoring sections."""
-        curses.curs_set(0)
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
         
         height, width = stdscr.getmaxyx()
         
