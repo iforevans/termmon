@@ -45,7 +45,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.6.7"
+__version__ = "1.6.8"
 __author__ = "Ifor Evans"
 
 
@@ -676,22 +676,16 @@ class TermMon:
             Next y position after the section
         """
         try:
-            # Box header
+            # Box header. Put overall CPU usage in the title to save one row on
+            # short iPad/mobile SSH terminals.
             core_count = self.system_data.get('core_count', 0)
+            cpu_pct = self.system_data.get('cpu_usage', 0)
             stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
             y += 1
-            stdscr.addstr(y, x, f"│ CPU ({core_count} cores)".ljust(BOX_WIDTH - 1) + "│")
+            cpu_title = f"│ CPU ({core_count} cores, overall {cpu_pct:5.1f}%)"
+            stdscr.addstr(y, x, cpu_title.ljust(BOX_WIDTH - 1) + "│")
             y += 1
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
-            y += 1
-            
-            # Overall CPU usage (align with core lines)
-            cpu_pct = self.system_data.get('cpu_usage', 0)
-            label = f"│ Overall:".ljust(11) + f"{cpu_pct:6.1f}%".rjust(8)
-            stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + 11 + 8, cpu_pct, BAR_WIDTH, COLOR_CPU)
-            # Close the box
-            stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
             y += 1
             
             # Per-core usage in TWO columns

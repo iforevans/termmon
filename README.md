@@ -120,6 +120,11 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.6.8 (2026-05-05)
+- **CPU tile vertical compaction**: Moved overall CPU percentage into the CPU title line after the core count
+  - Removes the separate `Overall` CPU row, freeing one vertical row for the GPU process command section
+  - Keeps per-core CPU rows unchanged
+
 ### v1.6.7 (2026-05-05)
 - **Aligned compact GPU process columns**: PID/GPU/HOST/USER headers now use the same fixed-width columns as the metadata row below
   - Keeps a single header/title row to avoid stealing command parameter space
