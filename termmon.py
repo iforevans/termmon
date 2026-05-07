@@ -46,7 +46,7 @@ from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.7.2"
+__version__ = "1.7.3"
 __author__ = "Ifor Evans"
 
 
@@ -701,8 +701,8 @@ class TermMon:
             cpu_pct = self.system_data.get('cpu_usage', 0)
             stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
             y += 1
-            cpu_title = f"│ CPU ({core_count} cores, overall {cpu_pct:5.1f}%)"
-            stdscr.addstr(y, x, cpu_title.ljust(BOX_WIDTH - 1) + "│")
+            cpu_title = f" CPU ({core_count} cores, overall {cpu_pct:5.1f}%)"
+            stdscr.addstr(y, x, ("│" + cpu_title).ljust(BOX_WIDTH - 1) + "│")
             y += 1
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
@@ -717,7 +717,7 @@ class TermMon:
             # instead of several positioned addstr/draw_bar calls; this avoids
             # stale characters and cursor-position weirdness on narrow/mobile
             # terminals where partial curses writes can visually drift.
-            content_width = BOX_WIDTH - 2
+            content_width = BOX_WIDTH - 4  # -2 for borders, -2 for side padding
             gap_width = 2
             col_width = (content_width - gap_width) // 2
             right_width = content_width - gap_width - col_width
@@ -763,7 +763,7 @@ class TermMon:
                     core_id, core_pct = per_core[right_idx]
                     right, right_bar_start, right_filled = core_cell(core_id, core_pct, right_width)
 
-                line = "│" + left + " " * gap_width + right + "│"
+                line = "│ " + left + " " * gap_width + right + " │"
                 stdscr.addstr(y, x, line[:BOX_WIDTH])
 
                 # Restore colored CPU utilization bars without returning to the
@@ -771,9 +771,9 @@ class TermMon:
                 # then overlay only the filled bar blocks with the CPU color.
                 cpu_attr = curses.color_pair(COLOR_CPU) | curses.A_BOLD
                 if left_filled > 0:
-                    stdscr.addstr(y, x + 1 + left_bar_start, "█" * left_filled, cpu_attr)
+                    stdscr.addstr(y, x + 2 + left_bar_start, "█" * left_filled, cpu_attr)
                 if right_filled > 0:
-                    right_x = x + 1 + col_width + gap_width + right_bar_start
+                    right_x = x + 2 + col_width + gap_width + right_bar_start
                     stdscr.addstr(y, right_x, "█" * right_filled, cpu_attr)
                 y += 1
             
@@ -908,16 +908,16 @@ class TermMon:
 
     def _draw_scrolled_process_line(self, stdscr, y: int, x: int, fixed: str, command: str, width: int) -> None:
         """Draw one bordered process table line with fixed columns and scrolled command."""
-        view_width = max(1, width - 2)
+        view_width = max(1, width - 4)  # -2 for borders, -2 for side padding
         fixed_visible = fixed[:view_width]
         cmd_width = max(0, view_width - len(fixed_visible))
         scroll = max(0, self.process_scroll_x)
         visible = fixed_visible + command[scroll:scroll + cmd_width]
-        stdscr.addstr(y, x, "│" + visible.ljust(view_width) + "│")
+        stdscr.addstr(y, x, "│ " + visible.ljust(view_width) + " │")
 
     def _max_process_scroll(self) -> int:
         """Maximum horizontal scroll offset for the process table command column."""
-        view_width = max(1, BOX_WIDTH - 2)
+        view_width = max(1, BOX_WIDTH - 4)  # -2 for borders, -2 for side padding
         cmd_width = max(1, view_width - len(self._gpu_process_fixed_header()))
         return max(0, max((len(self._process_command(proc)) for proc in self.gpu_processes), default=0) - cmd_width)
 
@@ -941,14 +941,15 @@ class TermMon:
             stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
             y += 1
 
-            title = f"│ GPU PROCESSES  ←/→ scroll {self.process_scroll_x}"
-            stdscr.addstr(y, x, title.ljust(BOX_WIDTH - 1)[:BOX_WIDTH-1] + "│")
+            title = f" GPU PROCESSES  ←/→ scroll {self.process_scroll_x}"
+            stdscr.addstr(y, x, ("│" + title).ljust(BOX_WIDTH - 1)[:BOX_WIDTH-1] + "│")
             y += 1
 
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
 
-            stdscr.addstr(y, x, "│" + self._gpu_process_table_header()[:BOX_WIDTH-2].ljust(BOX_WIDTH - 2) + "│")
+            hdr = self._gpu_process_table_header()
+            stdscr.addstr(y, x, ("│ " + hdr).ljust(BOX_WIDTH - 1)[:BOX_WIDTH-1] + "│")
             y += 1
 
             if y < height - 3:

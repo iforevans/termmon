@@ -118,6 +118,11 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.7.3 (2026-05-07)
+- **CPU and GPU process sections padded**: Added 1-space padding between content and box borders in CPU per-core rows and GPU process table
+  - CPU title line, per-core rows, and GPU process title/header/data rows all have side padding now
+  - Scrolled process viewport and max scroll calculation adjusted for the extra 2 chars of padding
+
 ### v1.7.2 (2026-05-05)
 - **Documentation and terminal compatibility cleanup**: README and module docstring now document the current `←` / `→` GPU process scroll keys and v1.7 CPU/process layouts
   - Wraps `curses.curs_set(0)` so terminals that cannot hide the cursor do not crash the dashboard
