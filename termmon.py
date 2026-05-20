@@ -213,9 +213,9 @@ class TermMon:
         Read GPU statistics.
 
         Linux (NVIDIA): uses nvidia-smi for VRAM, utilization, temperature, power.
-        macOS (Apple):  uses socpwrbud (preferred) or powermetrics + sysctl for
-        GPU utilization and metadata. socpwrbud reads IOReport counters directly
-        without sudo; powermetrics requires sudo on macOS 13+.
+        macOS (Apple):  uses macmon (preferred), socpwrbud, or powermetrics + sysctl
+        for GPU utilization and metadata. macmon reads IOReport counters directly
+        without sudo; falls back through socpwrbud then powermetrics.
         Falls back gracefully if the backend is unavailable.
         """
         try:
@@ -358,9 +358,17 @@ class TermMon:
         Get GPU active percentage and power draw.
 
         Multi-tier fallback (all non-sudo):
-          1. socpwrbud  — reads IOReport counters directly (no sudo, most reliable)
-          2. powermetrics — Apple's built-in tool (requires sudo on macOS 13+)
-          3. Returns (0, 0) if neither succeeds
+          1. macmon    — actively maintained, reads IOReport + SMC (no sudo, best data)
+          2. socpwrbud — archived but functional IOReport reader (no sudo)
+          3. powermetrics — Apple's built-in tool (requires sudo on macOS 13+)
+          4. Returns (0, 0) if none succeed
+
+        macmon pipe JSON example:
+          {
+            "gpu_usage": [1200, 0.75],  // [freq_mhz, percent_from_max]
+            "gpu_power": 5.2,            // Watts
+            "temp": { "gpu_temp_avg": 45.5 }
+          }
 
         socpwrbud output example:
           Integrated Graphics
@@ -373,13 +381,55 @@ class TermMon:
           GPU active percentage: 12.3%
           GPU power:            5.2 Watts
         """
-        # --- Tier 1: socpwrbud (preferred — no sudo, reads IOReport) ---
-        gpu_util, gpu_power = TermMon._apple_gpu_util_socpwrbud()
-        if gpu_util > 0 or gpu_power > 0:
-            return gpu_util, gpu_power
+        # --- Tier 1: macmon (preferred — actively maintained, no sudo) ---
+        result = TermMon._apple_gpu_util_macmon()
+        if result != (0.0, 0.0):
+            return result
 
-        # --- Tier 2: powermetrics (fallback — may require sudo) ---
+        # --- Tier 2: socpwrbud (fallback — archived but works on many chips) ---
+        result = TermMon._apple_gpu_util_socpwrbud()
+        if result != (0.0, 0.0):
+            return result
+
+        # --- Tier 3: powermetrics (last resort — requires sudo on macOS 13+) ---
         return TermMon._apple_gpu_util_powermetrics()
+
+    @staticmethod
+    def _apple_gpu_util_macmon() -> Tuple[float, float]:
+        """
+        Get GPU utilization from macmon (sudoless IOReport + SMC reader).
+
+        macmon is an actively maintained Rust tool (1.6k stars) that reads
+        GPU performance counters from IOReport without sudo. Available via:
+          - Homebrew:  brew install vladkens/tap/macmon
+          - Release:   https://github.com/vladkens/macmon/releases
+
+        Returns (gpu_util_pct, gpu_power_watts) as floats.
+        """
+        try:
+            # macmon pipe -s 1 gives one JSON line then exits
+            result = subprocess.run(
+                ['macmon', 'pipe', '-s', '1'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout.strip())
+                gpu_util = 0.0
+                gpu_power = 0.0
+
+                # gpu_usage: [freq_mhz, percent_from_max]  — 0.0 to 1.0
+                gpu_usage = data.get('gpu_usage')
+                if gpu_usage and len(gpu_usage) >= 2:
+                    gpu_util = gpu_usage[1] * 100  # convert fraction to percentage
+
+                # gpu_power: Watts
+                gpu_power = float(data.get('gpu_power', 0.0))
+
+                return gpu_util, gpu_power
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError,
+                json.JSONDecodeError, TypeError):
+            pass
+        return 0.0, 0.0
 
     @staticmethod
     def _apple_gpu_util_socpwrbud() -> Tuple[float, float]:
@@ -387,9 +437,8 @@ class TermMon:
         Get GPU utilization from socpwrbud (sudoless IOReport reader).
 
         socpwrbud is a third-party tool that reads GPU performance counters
-        directly from IOReport without requiring sudo. Available via:
-          - Homebrew:  brew install dehydratedpotato/tap/socpwrbud
-          - Manual:    download from https://github.com/dehydratedpotato/socpowerbud/releases
+        directly from IOReport without requiring sudo. Archived but still
+        functional on many Apple Silicon chips.
 
         Returns (gpu_util, gpu_power) as floats.
         """
@@ -400,7 +449,6 @@ class TermMon:
             )
             if result.returncode == 0:
                 gpu_util = 0.0
-                gpu_power = 0.0
                 for line in result.stdout.split('\n'):
                     line = line.strip()
                     if 'Active residency' in line:
@@ -409,15 +457,8 @@ class TermMon:
                             gpu_util = float(val)
                         except (ValueError, IndexError):
                             pass
-                    elif 'Average voltage' in line:
-                        try:
-                            # Rough power estimate: P ≈ V²/R (not accurate but gives a number)
-                            # We don't have current draw, so skip power from socpwrbud
-                            pass
-                        except (ValueError, IndexError):
-                            pass
                 if gpu_util > 0:
-                    return gpu_util, gpu_power
+                    return gpu_util, 0.0
         except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
             pass
         return 0.0, 0.0
@@ -1415,15 +1456,25 @@ class TermMon:
 if __name__ == "__main__":
     app = TermMon()
 
-    # Warn on macOS if socpwrbud is not available
+    # Warn on macOS if no GPU monitoring tool is available
     if _IS_MACOS:
+        has_macmon = False
+        has_socpwrbud = False
+        try:
+            subprocess.run(['which', 'macmon'], capture_output=True, timeout=3)
+            has_macmon = True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
         try:
             subprocess.run(['which', 'socpwrbud'], capture_output=True, timeout=3)
+            has_socpwrbud = True
         except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        if not has_macmon and not has_socpwrbud:
             print(
                 "Note: GPU utilization will show 0% without sudo on macOS 13+.\n"
-                "      For accurate readings, install socpwrbud:\n"
-                "      https://github.com/dehydratedpotato/socpowerbud/releases",
+                "      For accurate readings, install macmon (recommended):\n"
+                "      https://github.com/vladkens/macmon/releases",
                 file=sys.stderr,
             )
 
