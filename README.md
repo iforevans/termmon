@@ -14,16 +14,23 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
   - Sorted by VRAM usage (descending)
 - **Color-coded progress bars**: Visual feedback for resource usage
 - **Auto-refresh**: Updates every 2 seconds
-- **Pure Python**: No external dependencies (stdlib only)
+- **Cross-platform**: Linux (NVIDIA GPUs) and macOS (Apple Silicon GPUs)
+- **Pure Python**: Minimal external dependencies
 
 ## Requirements
 
 - Python 3.9+
-- Linux or macOS
 - `psutil` (`pip3 install psutil`)
-- NVIDIA drivers with `nvidia-smi` (for GPU monitoring on Linux)
-- On macOS: Apple Silicon GPU stats via `macmon` (preferred, no sudo), `socpwrbud`, or `powermetrics` (fallback)
-- Optional: `macmon` for accurate GPU utilization without sudo on macOS 13+ (recommended)
+
+### Linux
+- NVIDIA drivers with `nvidia-smi` (for GPU monitoring)
+
+### macOS (Apple Silicon)
+- `macmon` — **required** for accurate GPU utilization/power without sudo
+  - Install: `cargo install macmon` (requires Rust toolchain)
+  - Or build from source: `git clone https://github.com/vladkens/macmon && cd macmon && cargo build --release`
+  - Place binary in your `PATH` (e.g., `cp target/release/macmon ~/bin/`)
+- Fallbacks (if `macmon` unavailable): `socpwrbud` (no sudo, archived) or `powermetrics` (requires sudo on macOS 13+)
 
 ## Installation
 
@@ -122,6 +129,18 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
+
+### v1.8.2 (2026-05-20)
+- **macmon dependency documented**: README now clearly states `macmon` is required for accurate macOS GPU stats
+  - Added install instructions (`cargo install macmon` or build from source)
+  - Clarified that `macmon` binary must be in `PATH` (e.g., `~/bin/`)
+  - Split Requirements into Linux and macOS subsections for clarity
+
+### v1.8.1 (2026-05-20)
+- **macOS GPU utilization via `socpwrbud`**: Added `socpwrbud` as a sudoless fallback for GPU utilization
+  - Reads GPU active residency from IOReport power counters (no elevated privileges needed)
+  - Fallback chain: `socpwrbud` → `powermetrics` (requires sudo on macOS 13+)
+  - Startup warning if neither tool is found, recommending installation
 
 ### v1.8.0 (2026-05-20)
 - **Cross-platform support (Linux + macOS)**: termmon now auto-detects platform and GPU backend

@@ -62,7 +62,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.8.1"
+__version__ = "1.8.2"
 __author__ = "Ifor Evans"
 
 
