@@ -22,7 +22,8 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
 - Linux or macOS
 - `psutil` (`pip3 install psutil`)
 - NVIDIA drivers with `nvidia-smi` (for GPU monitoring on Linux)
-- On macOS: Apple Silicon GPU stats via `powermetrics` (no sudo required for basic stats)
+- On macOS: Apple Silicon GPU stats via `socpwrbud` (preferred, no sudo) or `powermetrics` (fallback)
+- Optional: `socpwrbud` for accurate GPU utilization without sudo on macOS 13+
 
 ## Installation
 
@@ -113,7 +114,8 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Built with**: Python + curses + psutil
 - **Dependencies**: `psutil` (cross-platform system stats)
 - **Platform detection**: Auto-detects Linux (NVIDIA) or macOS (Apple Silicon)
-- **GPU Detection**: `nvidia-smi` on Linux; `powermetrics` + `sysctl` on macOS
+- **GPU Detection**: `nvidia-smi` on Linux; `socpwrbud` (preferred) or `powermetrics` + `sysctl` on macOS
+- **macOS GPU**: Multi-tier fallback — `socpwrbud` reads IOReport counters (no sudo), falls back to `powermetrics` (requires sudo on macOS 13+)
 - **CPU Stats**: psutil (cross-platform, replaces `/proc/stat`)
 - **Memory Stats**: psutil (cross-platform, replaces `/proc/meminfo`)
 - **Process Info**: psutil.Process() (cross-platform, replaces `/proc/[pid]`)
@@ -124,7 +126,8 @@ Simply run `termmon` and watch your system resources in real-time.
 ### v1.8.0 (2026-05-20)
 - **Cross-platform support (Linux + macOS)**: termmon now auto-detects platform and GPU backend
   - System stats (CPU, memory, swap, per-core) now use `psutil` — works on both Linux and macOS
-  - GPU backend auto-detection: NVIDIA (`nvidia-smi`) on Linux, Apple Silicon (`powermetrics` + `sysctl`) on macOS
+- **GPU backend auto-detection**: NVIDIA (`nvidia-smi`) on Linux, Apple Silicon (`socpwrbud`/`powermetrics` + `sysctl`) on macOS
+- **macOS GPU utilization fix**: Added `socpwrbud` as primary method (reads IOReport counters, no sudo) with `powermetrics` as fallback
   - Apple Silicon GPU stats: model name, GPU core count, utilization %, power draw
   - Unified Memory Architecture (UMA) awareness — shows "shared w/ system memory" instead of VRAM bar on Apple Silicon
   - GPU process tracking on macOS via `psutil.process_iter()` (host memory as proxy for GPU activity)

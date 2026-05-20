@@ -62,7 +62,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.8.0"
+__version__ = "1.8.1"
 __author__ = "Ifor Evans"
 
 
@@ -213,7 +213,9 @@ class TermMon:
         Read GPU statistics.
 
         Linux (NVIDIA): uses nvidia-smi for VRAM, utilization, temperature, power.
-        macOS (Apple):  uses powermetrics + sysctl for GPU utilization and metadata.
+        macOS (Apple):  uses socpwrbud (preferred) or powermetrics + sysctl for
+        GPU utilization and metadata. socpwrbud reads IOReport counters directly
+        without sudo; powermetrics requires sudo on macOS 13+.
         Falls back gracefully if the backend is unavailable.
         """
         try:
@@ -353,13 +355,82 @@ class TermMon:
     @staticmethod
     def _apple_gpu_util_and_power() -> Tuple[float, float]:
         """
-        Get GPU active percentage and power draw from a single powermetrics call.
+        Get GPU active percentage and power draw.
 
-        powermetrics --samplers gpu_power outputs lines like:
+        Multi-tier fallback (all non-sudo):
+          1. socpwrbud  — reads IOReport counters directly (no sudo, most reliable)
+          2. powermetrics — Apple's built-in tool (requires sudo on macOS 13+)
+          3. Returns (0, 0) if neither succeeds
+
+        socpwrbud output example:
+          Integrated Graphics
+              Average frequency: 609 mhz
+              Average voltage:   692 mv
+              Active residency:  2.46 %
+              Idle residency:    97.54 %
+
+        powermetrics output example:
           GPU active percentage: 12.3%
           GPU power:            5.2 Watts
+        """
+        # --- Tier 1: socpwrbud (preferred — no sudo, reads IOReport) ---
+        gpu_util, gpu_power = TermMon._apple_gpu_util_socpwrbud()
+        if gpu_util > 0 or gpu_power > 0:
+            return gpu_util, gpu_power
 
-        Without sudo, this may return (0, 0) if denied.
+        # --- Tier 2: powermetrics (fallback — may require sudo) ---
+        return TermMon._apple_gpu_util_powermetrics()
+
+    @staticmethod
+    def _apple_gpu_util_socpwrbud() -> Tuple[float, float]:
+        """
+        Get GPU utilization from socpwrbud (sudoless IOReport reader).
+
+        socpwrbud is a third-party tool that reads GPU performance counters
+        directly from IOReport without requiring sudo. Available via:
+          - Homebrew:  brew install dehydratedpotato/tap/socpwrbud
+          - Manual:    download from https://github.com/dehydratedpotato/socpowerbud/releases
+
+        Returns (gpu_util, gpu_power) as floats.
+        """
+        try:
+            result = subprocess.run(
+                ['socpwrbud', '-i', '1000', '-s', '1', '-m', 'active,idle,freq,volts'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                gpu_util = 0.0
+                gpu_power = 0.0
+                for line in result.stdout.split('\n'):
+                    line = line.strip()
+                    if 'Active residency' in line:
+                        try:
+                            val = line.split(':')[-1].strip().rstrip('%')
+                            gpu_util = float(val)
+                        except (ValueError, IndexError):
+                            pass
+                    elif 'Average voltage' in line:
+                        try:
+                            # Rough power estimate: P ≈ V²/R (not accurate but gives a number)
+                            # We don't have current draw, so skip power from socpwrbud
+                            pass
+                        except (ValueError, IndexError):
+                            pass
+                if gpu_util > 0:
+                    return gpu_util, gpu_power
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            pass
+        return 0.0, 0.0
+
+    @staticmethod
+    def _apple_gpu_util_powermetrics() -> Tuple[float, float]:
+        """
+        Get GPU utilization from powermetrics (Apple's built-in tool).
+
+        Note: On macOS 13+ (Ventura and later), powermetrics requires sudo
+        to access GPU power sampler data. Without sudo, it returns zeros.
+
+        Returns (gpu_util, gpu_power) as floats.
         """
         try:
             result = subprocess.run(
@@ -1343,4 +1414,17 @@ class TermMon:
 
 if __name__ == "__main__":
     app = TermMon()
+
+    # Warn on macOS if socpwrbud is not available
+    if _IS_MACOS:
+        try:
+            subprocess.run(['which', 'socpwrbud'], capture_output=True, timeout=3)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            print(
+                "Note: GPU utilization will show 0% without sudo on macOS 13+.\n"
+                "      For accurate readings, install socpwrbud:\n"
+                "      https://github.com/dehydratedpotato/socpowerbud/releases",
+                file=sys.stderr,
+            )
+
     app.run()
