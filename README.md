@@ -19,8 +19,10 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
 ## Requirements
 
 - Python 3.9+
-- Linux system (reads from `/proc`)
-- NVIDIA drivers with `nvidia-smi` (for GPU monitoring)
+- Linux or macOS
+- `psutil` (`pip3 install psutil`)
+- NVIDIA drivers with `nvidia-smi` (for GPU monitoring on Linux)
+- On macOS: Apple Silicon GPU stats via `powermetrics` (no sudo required for basic stats)
 
 ## Installation
 
@@ -108,17 +110,28 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Technical Details
 
-- **Built with**: Python + curses
-- **Dependencies**: None (pure stdlib)
-- **GPU Detection**: Uses `nvidia-smi` CLI tool
-- **CPU Stats**: Reads from `/proc/stat`
-- **Memory Stats**: Reads from `/proc/meminfo`
-- **Process Info**: Reads from `/proc/[pid]/status`
+- **Built with**: Python + curses + psutil
+- **Dependencies**: `psutil` (cross-platform system stats)
+- **Platform detection**: Auto-detects Linux (NVIDIA) or macOS (Apple Silicon)
+- **GPU Detection**: `nvidia-smi` on Linux; `powermetrics` + `sysctl` on macOS
+- **CPU Stats**: psutil (cross-platform, replaces `/proc/stat`)
+- **Memory Stats**: psutil (cross-platform, replaces `/proc/meminfo`)
+- **Process Info**: psutil.Process() (cross-platform, replaces `/proc/[pid]`)
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
 
-### v1.7.3 (2026-05-07)
+### v1.8.0 (2026-05-20)
+- **Cross-platform support (Linux + macOS)**: termmon now auto-detects platform and GPU backend
+  - System stats (CPU, memory, swap, per-core) now use `psutil` — works on both Linux and macOS
+  - GPU backend auto-detection: NVIDIA (`nvidia-smi`) on Linux, Apple Silicon (`powermetrics` + `sysctl`) on macOS
+  - Apple Silicon GPU stats: model name, GPU core count, utilization %, power draw
+  - Unified Memory Architecture (UMA) awareness — shows "shared w/ system memory" instead of VRAM bar on Apple Silicon
+  - GPU process tracking on macOS via `psutil.process_iter()` (host memory as proxy for GPU activity)
+  - Dynamic GPU section title and "no data" messages per platform
+  - Single `powermetrics` call for both utilization and power (was two calls)
+  - Added `psutil` as the only external dependency
+  - Graceful fallback to "no GPU" when monitoring tools are unavailable or restricted
 - **CPU and GPU process sections padded**: Added 1-space padding between content and box borders in CPU per-core rows and GPU process table
   - CPU title line, per-core rows, and GPU process title/header/data rows all have side padding now
   - Scrolled process viewport and max scroll calculation adjusted for the extra 2 chars of padding

@@ -3,21 +3,23 @@
 termmon - Terminal System Monitor
 ==================================
 
-A unified terminal-based system monitor combining `htop` (system RAM/CPU) 
-and `nvidia-smi` (GPU/VRAM) functionality into a single dashboard.
+A unified terminal-based system monitor combining `htop` (system RAM/CPU)
+and GPU monitoring (nvidia-smi on Linux / powermetrics on macOS) into a
+single dashboard.
 
-Originally created to solve the problem of monitoring CPU/system RAM/swap 
-and GPU/VRAM usage from one window while testing local AI models on an 
+Originally created to solve the problem of monitoring CPU/system RAM/swap
+and GPU/VRAM usage from one window while testing local AI models on an
 RTX3090/24GB.
 
 Features:
     - System memory monitoring (RAM + swap in GB)
     - Overall and per-core CPU utilization
-    - NVIDIA GPU monitoring (VRAM, utilization, temperature, power)
-    - GPU process tracking (top 5 processes by VRAM usage)
+    - NVIDIA GPU monitoring on Linux (VRAM, utilization, temperature, power)
+    - Apple Silicon GPU monitoring on macOS (utilization, power, UMA)
+    - GPU process tracking (top 5 processes by memory usage)
     - Color-coded progress bars
     - Auto-refresh every 2 seconds
-    - Pure Python with no external dependencies
+    - Cross-platform (Linux + macOS)
 
 Usage:
     termmon
@@ -38,15 +40,29 @@ License:
 
 import curses
 import concurrent.futures
+import json
 import os
+import platform
 import pwd
 import signal
 import subprocess
+import sys
 from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-__version__ = "1.7.3"
+try:
+    import psutil
+except ImportError:
+    print("Error: psutil is required. Install with: pip3 install psutil", file=sys.stderr)
+    sys.exit(1)
+
+# Platform detection (set once at import time)
+_SYSTEM = platform.system()  # 'Linux' or 'Darwin'
+_IS_MACOS = _SYSTEM == "Darwin"
+_IS_LINUX = _SYSTEM == "Linux"
+
+__version__ = "1.8.0"
 __author__ = "Ifor Evans"
 
 
@@ -83,8 +99,6 @@ class TermMon:
         self.gpu_data: List[Dict[str, Any]] = []
         self.gpu_processes: List[Dict[str, Any]] = []
         self.system_data: Dict[str, Any] = {}
-        self.last_cpu_stats: Optional[Tuple[int, int]] = None
-        self.last_per_core_stats: Dict[int, Tuple[int, int]] = {}
         self.core_count: int = self._get_core_count()
         self._resized: bool = False  # SIGWINCH flag
         self.process_scroll_x: int = 0  # Horizontal scroll offset for nvtop-style process table
@@ -95,96 +109,40 @@ class TermMon:
 
     @staticmethod
     def _get_core_count() -> int:
-        """Read CPU core count from /proc/cpuinfo (called once at init)."""
-        try:
-            with open('/proc/cpuinfo', 'r') as f:
-                return len([l for l in f.read().split('\n') if l.startswith('processor')])
-        except (FileNotFoundError, IOError):
-            return 0
+        """Read CPU core count (cross-platform)."""
+        return psutil.cpu_count() or 0
         
     def get_system_stats(self) -> None:
         """
-        Read system memory and CPU statistics from /proc filesystem.
-        
-        Parses /proc/meminfo for memory/swap statistics and /proc/stat for
-        CPU utilization. Calculates CPU usage using delta between samples
-        for accurate real-time measurement (not cumulative from boot).
+        Read system memory and CPU statistics (cross-platform via psutil).
+
+        Uses psutil for virtual memory, swap, and per-core CPU utilization.
+        Calculates CPU usage using delta between samples for accurate
+        real-time measurement.
         """
         try:
-            with open('/proc/meminfo', 'r') as f:
-                meminfo = {}
-                for line in f:
-                    if ':' in line:
-                        key, value = line.split(':')
-                        meminfo[key.strip()] = int(value.split()[0])
-            
-            total_mem = meminfo.get('MemTotal', 0)
-            avail_mem = meminfo.get('MemAvailable', 0)
-            used_mem = total_mem - avail_mem
-            swap_total = meminfo.get('SwapTotal', 0)
-            swap_free = meminfo.get('SwapFree', 0)
-            swap_used = swap_total - swap_free
-            
-            total_mem_gb = total_mem / 1024 / 1024
-            used_mem_gb = used_mem / 1024 / 1024
-            avail_mem_gb = avail_mem / 1024 / 1024
-            swap_total_mb = swap_total / 1024
-            swap_used_mb = swap_used / 1024
-            
-            # Overall CPU - parse /proc/stat
-            # Format: cpu <user> <nice> <system> <idle> <iowait> <irq> <softirq> <steal> <guest> <guest_nice>
-            # Fields:  [0]   [1]    [2]      [3]       [4]      [5]     [6]       [7]      [8]       [9]        [10]
-            with open('/proc/stat', 'r') as f:
-                lines = f.readlines()
-            
-            # Parse overall CPU (first line)
-            cpu_line = lines[0]
-            cpu_values = [int(v) for v in cpu_line.split()[1:12]]  # Skip 'cpu' label, take 11 fields
-            idle = cpu_values[3] + cpu_values[4]  # idle + iowait
-            total = sum(cpu_values)
-            
-            # Calculate CPU usage using delta (difference from last sample)
-            # This gives real-time usage, not cumulative since boot
-            cpu_usage = 0.0
-            if self.last_cpu_stats is not None:
-                prev_idle, prev_total = self.last_cpu_stats
-                idle_delta = idle - prev_idle
-                total_delta = total - prev_total
-                if total_delta > 0:
-                    cpu_usage = (1 - idle_delta / total_delta) * 100
-            
-            self.last_cpu_stats = (idle, total)
-            
-            # Parse per-core stats (cpu0, cpu1, cpu2, ...)
-            # Each line has same format as overall CPU line
-            per_core_usage = []
-            for line in lines[1:]:
-                if line.startswith('cpu'):
-                    parts = line.split()
-                    if len(parts) >= 11:  # Need core name + 10 stat fields
-                        core_id = int(parts[0][3:])  # Extract number from 'cpu0', 'cpu1', etc.
-                        core_values = [int(v) for v in parts[1:11]]  # Take 10 stat fields
-                        core_idle = core_values[3] + core_values[4]  # idle + iowait
-                        core_total = sum(core_values)
-                        
-                        # Calculate per-core usage using delta
-                        core_usage = 0.0
-                        if core_id in self.last_per_core_stats:
-                            prev_idle, prev_total = self.last_per_core_stats[core_id]
-                            idle_delta = core_idle - prev_idle
-                            total_delta = core_total - prev_total
-                            if total_delta > 0:
-                                core_usage = (1 - idle_delta / total_delta) * 100
-                        
-                        self.last_per_core_stats[core_id] = (core_idle, core_total)
-                        per_core_usage.append((core_id, core_usage))
-            
-            # Sort by core ID
-            per_core_usage.sort(key=lambda x: x[0])
-            
-            mem_percent = (used_mem / total_mem) * 100 if total_mem > 0 else 0
-            swap_percent = (swap_used / swap_total) * 100 if swap_total > 0 else 0
-            
+            # Memory via psutil (cross-platform)
+            vm = psutil.virtual_memory()
+            swap = psutil.swap_memory()
+
+            total_mem_gb = vm.total / 1024 / 1024 / 1024
+            used_mem_gb = vm.used / 1024 / 1024 / 1024
+            avail_mem_gb = vm.available / 1024 / 1024 / 1024
+            mem_percent = vm.percent
+
+            # Swap - some platforms report swap as percentage directly,
+            # others as bytes. Normalise to MB.
+            swap_total_mb = swap.total / 1024 / 1024
+            swap_used_mb = swap.used / 1024 / 1024
+            swap_percent = swap.percent
+
+            # Per-core CPU usage (cross-platform)
+            # psutil.cpu_percent(percpu=True) returns a list of per-core
+            # percentages. First call returns 0.0; subsequent calls give
+            # the real delta-based reading.
+            per_core_raw = psutil.cpu_percent(percpu=True)
+            per_core_usage = list(enumerate(per_core_raw))
+
             self.system_data = {
                 'total_mem_gb': total_mem_gb,
                 'used_mem_gb': used_mem_gb,
@@ -193,7 +151,7 @@ class TermMon:
                 'swap_total_mb': swap_total_mb,
                 'swap_used_mb': swap_used_mb,
                 'swap_percent': swap_percent,
-                'cpu_usage': cpu_usage,
+                'cpu_usage': sum(per_core_raw) / max(len(per_core_raw), 1),
                 'core_count': self.core_count,
                 'per_core_usage': per_core_usage
             }
@@ -202,152 +160,400 @@ class TermMon:
         except Exception as e:
             self.system_data['error'] = str(e)
     
+    # ------------------------------------------------------------------ #
+    #  GPU backends — auto-detected at init, swappable for testing       #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def _gpu_backend(self) -> str:
+        """Return 'nvidia', 'apple', or 'none' based on platform detection."""
+        if not hasattr(self, '_cached_backend'):
+            self._cached_backend = self._detect_gpu_backend()
+        return self._cached_backend
+
+    @staticmethod
+    def _detect_gpu_backend() -> str:
+        """Detect available GPU backend without sudo."""
+        if _IS_LINUX:
+            try:
+                subprocess.run(
+                    ['nvidia-smi', '--query-gpu=index', '--format=csv,noheader'],
+                    capture_output=True, timeout=3
+                )
+                return 'nvidia'
+            except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+                pass
+        if _IS_MACOS:
+            # Check for Apple Silicon GPU via sysctl
+            try:
+                result = subprocess.run(
+                    ['sysctl', '-n', 'hw.gpu.model'],
+                    capture_output=True, text=True, timeout=3
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return 'apple'
+            except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+                pass
+            # Fallback: check for Intel/AMD discrete GPUs via system_profiler
+            try:
+                result = subprocess.run(
+                    ['system_profiler', 'SPDisplaysDataType', '-json'],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    return 'apple'
+            except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+                pass
+        return 'none'
+
+    # ---- NVIDIA backend (Linux) ----------------------------------------
+
     def get_gpu_stats(self) -> None:
         """
-        Read NVIDIA GPU statistics using nvidia-smi.
-        
-        Queries GPU index, name, memory (total/used/free), utilization,
-        temperature, and power draw.
+        Read GPU statistics.
+
+        Linux (NVIDIA): uses nvidia-smi for VRAM, utilization, temperature, power.
+        macOS (Apple):  uses powermetrics + sysctl for GPU utilization and metadata.
+        Falls back gracefully if the backend is unavailable.
         """
         try:
-            result = subprocess.run(
-                [
-                    'nvidia-smi',
-                    f'--query-gpu={GPU_QUERY_FIELDS}',
-                    '--format=csv,noheader,nounits'
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.returncode == 0:
-                gpus = []
-                for gpu in result.stdout.strip().split('\n'):
-                    parts = [p.strip() for p in gpu.split(',')]
-                    if len(parts) >= 8:
-                        try:
-                            gpus.append({
-                                'idx': parts[0],
-                                'name': parts[1],
-                                'mem_total': float(parts[2]),
-                                'mem_used': float(parts[3]),
-                                'mem_free': float(parts[4]),
-                                'gpu_util': float(parts[5]),
-                                'temp': float(parts[6]),
-                                'power': float(parts[7])
-                            })
-                        except (ValueError, IndexError):
-                            pass
-                self.gpu_data = gpus
+            if self._gpu_backend == 'nvidia':
+                self._get_gpu_stats_nvidia()
+            elif self._gpu_backend == 'apple':
+                self._get_gpu_stats_apple()
             else:
                 self.gpu_data = []
         except KeyboardInterrupt:
             raise
-        except Exception as e:
+        except Exception:
             self.gpu_data = []
-    
-    def get_gpu_processes(self) -> None:
+
+    def _get_gpu_stats_nvidia(self) -> None:
+        """Read NVIDIA GPU statistics using nvidia-smi."""
+        result = subprocess.run(
+            [
+                'nvidia-smi',
+                f'--query-gpu={GPU_QUERY_FIELDS}',
+                '--format=csv,noheader,nounits'
+            ],
+            capture_output=True, text=True, timeout=5
+        )
+
+        if result.returncode == 0:
+            gpus = []
+            for gpu in result.stdout.strip().split('\n'):
+                parts = [p.strip() for p in gpu.split(',')]
+                if len(parts) >= 8:
+                    try:
+                        gpus.append({
+                            'idx': parts[0],
+                            'name': parts[1],
+                            'mem_total': float(parts[2]),
+                            'mem_used': float(parts[3]),
+                            'mem_free': float(parts[4]),
+                            'gpu_util': float(parts[5]),
+                            'temp': float(parts[6]),
+                            'power': float(parts[7]),
+                            'gpu_cores': 0,
+                            'is_uma': False,
+                        })
+                    except (ValueError, IndexError):
+                        pass
+            self.gpu_data = gpus
+        else:
+            self.gpu_data = []
+
+    def _get_gpu_stats_apple(self) -> None:
         """
-        Read GPU compute applications using nvidia-smi.
-        
-        Queries active GPU processes: PID, process name, and memory used.
-        Enriches with user and host memory from /proc filesystem.
-        Returns top processes sorted by VRAM usage.
+        Read Apple Silicon GPU statistics.
+
+        Uses powermetrics for GPU active percentage and power draw
+        (single call, best effort — requires entitlement on newer macOS;
+        falls back to 0 if denied).
+
+        Uses sysctl/system_profiler for GPU model name and core count.
+        Unified Memory Architecture means there is no separate VRAM pool.
+        """
+        gpus = []
+
+        # --- GPU model name and core count (one-shot cache) ---
+        gpu_name = self._apple_gpu_model()
+        gpu_cores = self._apple_gpu_cores()
+
+        # --- GPU utilization + power via single powermetrics call ---
+        gpu_util, gpu_power = self._apple_gpu_util_and_power()
+
+        # --- Temperature (best effort — usually not available without sudo) ---
+        gpu_temp = 0.0  # Not available without sudo/IOKit entitlement
+
+        gpus.append({
+            'idx': '0',
+            'name': gpu_name or 'Apple GPU',
+            'mem_total': 0,     # UMA — no separate VRAM
+            'mem_used': 0,
+            'mem_free': 0,
+            'gpu_util': gpu_util,
+            'temp': gpu_temp,
+            'power': gpu_power,
+            # Extra fields for the draw layer
+            'gpu_cores': gpu_cores,
+            'is_uma': True,     # flag: Unified Memory Architecture
+        })
+
+        self.gpu_data = gpus
+
+    @staticmethod
+    def _apple_gpu_model() -> str:
+        """Get GPU model name from sysctl or system_profiler."""
+        # Try sysctl first (fast)
+        for key in ('hw.gpu.model', 'hw.model'):
+            try:
+                result = subprocess.run(
+                    ['sysctl', '-n', key],
+                    capture_output=True, text=True, timeout=3
+                )
+                if result.returncode == 0:
+                    model = result.stdout.strip()
+                    if key == 'hw.gpu.model' and model:
+                        return model
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+
+        # Fallback: parse system_profiler
+        try:
+            result = subprocess.run(
+                ['system_profiler', 'SPDisplaysDataType', '-json'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                if data.get('SPDisplaysDataType'):
+                    # First GPU entry
+                    gpu = data['SPDisplaysDataType'][0]
+                    return gpu.get('spdisplays_chipset', 'Apple GPU')
+        except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            pass
+
+        return 'Apple GPU'
+
+    @staticmethod
+    def _apple_gpu_cores() -> int:
+        """Get GPU core count from sysctl."""
+        try:
+            result = subprocess.run(
+                ['sysctl', '-n', 'hw.gpus'],
+                capture_output=True, text=True, timeout=3
+            )
+            if result.returncode == 0:
+                return int(result.stdout.strip())
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            pass
+        return 0
+
+    @staticmethod
+    def _apple_gpu_util_and_power() -> Tuple[float, float]:
+        """
+        Get GPU active percentage and power draw from a single powermetrics call.
+
+        powermetrics --samplers gpu_power outputs lines like:
+          GPU active percentage: 12.3%
+          GPU power:            5.2 Watts
+
+        Without sudo, this may return (0, 0) if denied.
         """
         try:
             result = subprocess.run(
-                [
-                    'nvidia-smi',
-                    f'--query-compute-apps={GPU_COMPUTE_QUERY}',
-                    '--format=csv,noheader,nounits'
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5
+                ['powermetrics', '--samplers', 'gpu_power', '-n', '1', '-i', '1000'],
+                capture_output=True, text=True, timeout=5
             )
-            
             if result.returncode == 0:
-                processes = []
-                for line in result.stdout.strip().split('\n'):
-                    if not line.strip():
-                        continue
-                    parts = [p.strip() for p in line.split(',')]
-                    if len(parts) >= 3:
-                        try:
-                            # Order: pid, process_name, used_gpu_memory
-                            pid = int(parts[0].strip())
-                            # Process name might have commas, memory is last
-                            mem_used = float(parts[-1].strip())
-                            # Process name is everything in between
-                            process_name = ','.join(parts[1:-1]).strip()
-                            
-                            # Enrich with user and host memory from /proc
-                            user = "unknown"
-                            host_mem = 0.0
-                            cpu_pct = 0.0
-                            cmdline = ""
-                            try:
-                                # Get UID and RSS from /proc/[pid]/status (single read)
-                                with open(f'/proc/{pid}/status', 'r') as f:
-                                    for proc_line in f:
-                                        if proc_line.startswith('Uid:'):
-                                            uid = proc_line.split()[1]
-                                            # Look up username from UID
-                                            try:
-                                                user = pwd.getpwuid(int(uid)).pw_name
-                                            except (KeyError, ValueError):
-                                                user = uid
-                                        elif proc_line.startswith('VmRSS:'):
-                                            # VmRSS is in kB
-                                            host_mem = float(proc_line.split()[1]) / 1024  # Convert to MB
-                                
-                                # Get command line from /proc/[pid]/cmdline
-                                try:
-                                    with open(f'/proc/{pid}/cmdline', 'r') as f:
-                                        # cmdline is null-separated
-                                        cmdline = f.read().replace('\0', ' ').strip()
-                                except (FileNotFoundError, PermissionError, IOError):
-                                    pass
-                                # Get current CPU percentage from ps. nvidia-smi compute
-                                # query does not expose per-process CPU, but nvtop-style
-                                # rows need a CPU column.
-                                try:
-                                    ps_result = subprocess.run(
-                                        ['ps', '-p', str(pid), '-o', '%cpu='],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=1
-                                    )
-                                    if ps_result.returncode == 0 and ps_result.stdout.strip():
-                                        cpu_pct = float(ps_result.stdout.strip().split()[0])
-                                except (ValueError, subprocess.SubprocessError, FileNotFoundError):
-                                    pass
-                            except (FileNotFoundError, PermissionError, IOError):
-                                # Process may have exited or no permission
-                                pass
-                            
-                            processes.append({
-                                'pid': pid,
-                                'user': user,
-                                'mem_used': mem_used,
-                                'host_mem': host_mem,
-                                'cpu_pct': cpu_pct,
-                                'process_name': process_name,
-                                'cmdline': cmdline
-                            })
-                        except (ValueError, IndexError):
-                            pass
-                
-                # Sort by memory usage (descending) and take top N
-                processes.sort(key=lambda x: x['mem_used'], reverse=True)
-                self.gpu_processes = processes[:MAX_GPU_PROCS]
+                gpu_util = 0.0
+                gpu_power = 0.0
+                for line in result.stdout.split('\n'):
+                    line = line.strip()
+                    if 'GPU active percentage' in line:
+                        parts = line.split(':')
+                        if len(parts) >= 2:
+                            val = parts[-1].strip().rstrip('%')
+                            gpu_util = float(val)
+                    elif line.startswith('GPU power:'):
+                        parts = line.split(':')
+                        if len(parts) >= 2:
+                            val = parts[-1].strip().split()[0]
+                            gpu_power = float(val)
+                return gpu_util, gpu_power
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            pass
+        return 0.0, 0.0
+
+    # ---- GPU processes ------------------------------------------------
+
+    def get_gpu_processes(self) -> None:
+        """
+        Read active GPU processes.
+
+        Linux (NVIDIA): uses nvidia-smi --query-compute-apps, enriches with
+        psutil for user, host memory, and command line.
+        macOS (Apple): queries psutil for processes using GPU-accelerated
+        frameworks (Metal/OpenCL) — best-effort via /proc-like process info.
+        """
+        try:
+            if self._gpu_backend == 'nvidia':
+                self._get_gpu_processes_nvidia()
+            elif self._gpu_backend == 'apple':
+                self._get_gpu_processes_apple()
             else:
                 self.gpu_processes = []
         except KeyboardInterrupt:
             raise
-        except Exception as e:
+        except Exception:
             self.gpu_processes = []
+
+    def _get_gpu_processes_nvidia(self) -> None:
+        """Get NVIDIA GPU compute apps via nvidia-smi, enriched with psutil."""
+        result = subprocess.run(
+            [
+                'nvidia-smi',
+                f'--query-compute-apps={GPU_COMPUTE_QUERY}',
+                '--format=csv,noheader,nounits'
+            ],
+            capture_output=True, text=True, timeout=5
+        )
+
+        if result.returncode == 0:
+            processes = []
+            for line in result.stdout.strip().split('\n'):
+                if not line.strip():
+                    continue
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 3:
+                    try:
+                        pid = int(parts[0].strip())
+                        mem_used = float(parts[-1].strip())
+                        process_name = ','.join(parts[1:-1]).strip()
+                        enriched = self._enrich_process(pid, process_name, mem_used)
+                        processes.append(enriched)
+                    except (ValueError, IndexError):
+                        pass
+
+            processes.sort(key=lambda x: x['mem_used'], reverse=True)
+            self.gpu_processes = processes[:MAX_GPU_PROCS]
+        else:
+            self.gpu_processes = []
+
+    def _get_gpu_processes_apple(self) -> None:
+        """
+        Get GPU-active processes on macOS.
+
+        Uses psutil to find processes, then filters for those with GPU
+        activity (best-effort). On macOS, there's no per-process GPU memory
+        query without sudo. We show the top CPU-intensive processes as a
+        proxy, since GPU-bound workloads also show CPU activity.
+        """
+        processes = []
+        try:
+            for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info']):
+                try:
+                    info = proc.info
+                    pid = info['pid']
+                    if pid is None:
+                        continue
+
+                    # Try to get user
+                    try:
+                        username = proc.username()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        username = 'unknown'
+
+                    # Memory
+                    mem_info = info.get('memory_info')
+                    host_mem = (mem_info.rss / 1024 / 1024) if mem_info else 0.0
+
+                    # CPU
+                    cpu_pct = info.get('cpu_percent') or 0.0
+
+                    # Command line
+                    try:
+                        cmdline = ' '.join(proc.cmdline())
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        cmdline = ''
+
+                    # GPU memory: not available per-process on Apple Silicon
+                    # without sudo. We use host RSS as a proxy.
+                    gpu_mem = 0.0
+
+                    processes.append({
+                        'pid': pid,
+                        'user': username,
+                        'mem_used': gpu_mem,
+                        'host_mem': host_mem,
+                        'cpu_pct': cpu_pct,
+                        'process_name': info.get('name', 'unknown') or 'unknown',
+                        'cmdline': cmdline,
+                    })
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            # Sort by host memory as proxy for GPU activity
+            processes.sort(key=lambda x: x['host_mem'], reverse=True)
+            self.gpu_processes = processes[:MAX_GPU_PROCS]
+        except Exception:
+            self.gpu_processes = []
+
+    @staticmethod
+    def _enrich_process(pid: int, process_name: str, gpu_mem: float) -> Dict[str, Any]:
+        """Enrich a GPU process with user, host memory, CPU %, and cmdline via psutil."""
+        user = "unknown"
+        host_mem = 0.0
+        cpu_pct = 0.0
+        cmdline = ""
+
+        try:
+            p = psutil.Process(pid)
+
+            # User
+            try:
+                user = p.username().split('/')[-1]  # Handle 'domain\\user' on Windows
+            except (psutil.AccessDenied, AttributeError):
+                # Fallback: try pwd lookup on Linux
+                try:
+                    import pwd as _pwd
+                    uid = p.uids().real
+                    user = _pwd.getpwuid(uid).pw_name
+                except (KeyError, NameError, psutil.NoSuchProcess):
+                    pass
+
+            # Host memory (RSS in MB)
+            try:
+                mem = p.memory_info()
+                host_mem = mem.rss / 1024 / 1024
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                pass
+
+            # CPU %
+            try:
+                cpu_pct = p.cpu_percent(interval=0.1)
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                pass
+
+            # Command line
+            try:
+                cmdline = ' '.join(p.cmdline())
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                pass
+
+        except psutil.NoSuchProcess:
+            pass
+
+        return {
+            'pid': pid,
+            'user': user,
+            'mem_used': gpu_mem,
+            'host_mem': host_mem,
+            'cpu_pct': cpu_pct,
+            'process_name': process_name,
+            'cmdline': cmdline,
+        }
     
     def update_stats(self) -> None:
         """Update all system and GPU statistics.
@@ -785,85 +991,113 @@ class TermMon:
         
         return y
     
+    def _gpu_section_title(self) -> str:
+        """Return a dynamic GPU section title based on the active backend."""
+        if self._gpu_backend == 'nvidia':
+            return 'NVIDIA GPU(s)'
+        if self._gpu_backend == 'apple':
+            return 'Apple GPU'
+        return 'GPU'
+
+    def _gpu_no_data_message(self) -> str:
+        """Return a helpful 'no data' message for the active backend."""
+        if self._gpu_backend == 'nvidia':
+            return 'No NVIDIA GPUs found or nvidia-smi not available'
+        if self._gpu_backend == 'apple':
+            return 'No GPU data available (powermetrics may need entitlements)'
+        return 'No GPU detected or GPU monitoring unavailable'
+
     def _draw_gpu_section(self, stdscr, y: int, x: int, height: int) -> int:
         """
-        Draw the NVIDIA GPU monitoring section (2-column layout).
-        
-        Args:
-            stdscr: Curses window
-            y: Starting row position
-            x: Column position
-            height: Terminal height (for bounds checking)
-            
-        Returns:
-            Next y position after the section
+        Draw the GPU monitoring section (2-column layout).
+
+        Handles both NVIDIA (with VRAM bar) and Apple Silicon (UMA — no
+        separate VRAM, shows GPU cores instead).
         """
         try:
             # Box header
             stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
             y += 1
-            stdscr.addstr(y, x, "│ NVIDIA GPU(s)".ljust(BOX_WIDTH - 1) + "│")
+            stdscr.addstr(y, x, ("│ " + self._gpu_section_title()).ljust(BOX_WIDTH - 1) + "│")
             y += 1
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
-            
+
             if not self.gpu_data:
-                line = "│ No GPUs found or nvidia-smi not available"
-                stdscr.addstr(y, x, (line + " " * (BOX_WIDTH - len(line) - 1))[:BOX_WIDTH-1] + "│")
+                msg = "│ " + self._gpu_no_data_message()
+                stdscr.addstr(y, x, (msg + " " * (BOX_WIDTH - len(msg) - 1))[:BOX_WIDTH-1] + "│")
                 y += 1
             else:
                 for gpu in self.gpu_data:
-                    mem_pct = (gpu['mem_used'] / gpu['mem_total']) * 100 if gpu['mem_total'] > 0 else 0
-                    mem_used_gb = gpu['mem_used'] / 1024
-                    mem_total_gb = gpu['mem_total'] / 1024
-                    
+                    is_uma = gpu.get('is_uma', False)
+                    gpu_cores = gpu.get('gpu_cores', 0)
+
                     # Calculate column positions
                     left_col_width = 42  # GPU name takes ~42 chars
                     right_col_start = x + left_col_width
-                    
+
                     # Row 1: GPU name (left) | Temp + Power (right) - SAME LINE
-                    gpu_name = f"GPU {gpu['idx']}: {gpu['name'][:35]}"
-                    temp_power = f"Temp: {gpu['temp']:5.0f}°C  Power: {gpu['power']:6.1f}W"
-                    
+                    if is_uma:
+                        # Apple Silicon: show name + core count
+                        core_info = f" ({gpu_cores}-core GPU)" if gpu_cores else ""
+                        gpu_name = f" {gpu['name'][:35]}{core_info}"
+                    else:
+                        gpu_name = f"GPU {gpu['idx']}: {gpu['name'][:35]}"
+
+                    if gpu['temp'] > 0:
+                        temp_power = f"Temp: {gpu['temp']:5.0f}°C  Power: {gpu['power']:6.1f}W"
+                    else:
+                        temp_power = f"Power: {gpu['power']:6.1f}W"
+
                     # Build the combined line
                     line = f"│ {gpu_name}"
                     stdscr.addstr(y, x, line)
-                    
+
                     # Add temp/power on the right
                     stdscr.addstr(y, right_col_start, temp_power)
                     stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
                     y += 1
-                    
-                    # Row 2: Util (left) | VRAM (right)
+
+                    # Row 2: Util (left) | VRAM or UMA info (right)
                     # Left column: Util
                     left_label = "│ Util:"
                     stdscr.addstr(y, x, left_label)
                     self.draw_bar(stdscr, y, x + 6, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
                     util_info = f" {gpu['gpu_util']:6.1f}%"
                     stdscr.addstr(y, x + 6 + BAR_WIDTH, util_info)
-                    
-                    # Right column: VRAM
-                    right_label = "VRAM:"
-                    stdscr.addstr(y, right_col_start, right_label)
-                    self.draw_bar(stdscr, y, right_col_start + 5, mem_pct, BAR_WIDTH, COLOR_VRAM)
-                    vram_info = f" {mem_used_gb:5.1f}GB/{mem_total_gb:4.1f}G {mem_pct:5.1f}%"
-                    stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, vram_info)
-                    
+
+                    # Right column: VRAM (NVIDIA) or UMA info (Apple)
+                    if is_uma:
+                        right_label = "UMA:"
+                        stdscr.addstr(y, right_col_start, right_label)
+                        uma_info = " shared w/ system memory"
+                        stdscr.addstr(y, right_col_start + 4, uma_info)
+                    else:
+                        mem_pct = (gpu['mem_used'] / gpu['mem_total']) * 100 if gpu['mem_total'] > 0 else 0
+                        mem_used_gb = gpu['mem_used'] / 1024
+                        mem_total_gb = gpu['mem_total'] / 1024
+
+                        right_label = "VRAM:"
+                        stdscr.addstr(y, right_col_start, right_label)
+                        self.draw_bar(stdscr, y, right_col_start + 5, mem_pct, BAR_WIDTH, COLOR_VRAM)
+                        vram_info = f" {mem_used_gb:5.1f}GB/{mem_total_gb:4.1f}G {mem_pct:5.1f}%"
+                        stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, vram_info)
+
                     # Close the box
                     stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
                     y += 1
-                    
+
                     # Separator between GPUs (if more GPUs and space available)
                     if y < height - 3 and int(gpu['idx']) < len(self.gpu_data) - 1:
                         stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
                         y += 1
-            
+
             # Box footer
             stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
             y += 2
         except curses.error:
             pass
-        
+
         return y
     
     def _process_command(self, proc: Dict[str, Any]) -> str:
