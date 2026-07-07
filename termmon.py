@@ -64,7 +64,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.9.0"
+__version__ = "1.9.1"
 __author__ = "Ifor Evans"
 
 
@@ -97,7 +97,6 @@ class TermMon:
     
     def __init__(self) -> None:
         """Initialize the TermMon application."""
-        import threading
         self.running: bool = True
         self.gpu_data: List[Dict[str, Any]] = []
         self.gpu_processes: List[Dict[str, Any]] = []
@@ -678,8 +677,53 @@ class TermMon:
         while self.running:
             if self._stats_should_update:
                 self._stats_should_update = False
-                self.get_system_stats()
-                self._get_gpu_data_parallel()
+                # Collect into local copies so we don't hold the lock during
+                # expensive subprocess-adjacent system calls (nvidia-smi, etc.)
+                new_sysdata = {}
+                new_gpus = []
+                new_procs = []
+
+                # --- system stats (inlined from get_system_stats) ---
+                try:
+                    vm = psutil.virtual_memory()
+                    swap = psutil.swap_memory()
+                    per_core_raw = psutil.cpu_percent(percpu=True)
+                    per_core_usage = list(enumerate(per_core_raw))
+                    new_sysdata = {
+                        'total_mem_gb': vm.total / 1024**3,
+                        'used_mem_gb': vm.used / 1024**3,
+                        'avail_mem_gb': vm.available / 1024**3,
+                        'mem_percent': vm.percent,
+                        'swap_total_mb': swap.total / 1024**2,
+                        'swap_used_mb': swap.used / 1024**2,
+                        'swap_percent': swap.percent,
+                        'cpu_usage': sum(per_core_raw) / max(len(per_core_raw), 1),
+                        'core_count': self.core_count,
+                        'per_core_usage': per_core_usage,
+                    }
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    new_sysdata = {'error': str(e)}
+
+                # --- GPU stats + processes (parallel) ---
+                try:
+                    self._get_gpu_data_parallel()
+                    # Snapshot the just-written values (they live in self.* now)
+                    with self._stats_lock:
+                        new_gpus = list(self.gpu_data)
+                        new_procs = list(self.gpu_processes)
+                except KeyboardInterrupt:
+                    raise
+                except Exception:
+                    pass  # leave new_gpus / new_procs as []
+
+                # --- Atomic swap under the lock ---
+                with self._stats_lock:
+                    self.system_data = new_sysdata
+                    self.gpu_data = new_gpus
+                    self.gpu_processes = new_procs
+
             time.sleep(0.1)  # Check for update signal every 100ms
     
     def update_stats(self) -> None:
@@ -1333,6 +1377,27 @@ class TermMon:
     
     def draw(self, stdscr) -> None:
         """Draw the complete UI with all monitoring sections."""
+        # Take a thread-safe snapshot of the latest stats
+        with self._stats_lock:
+            sysdata = dict(self.system_data)
+            gpudata = list(self.gpu_data)
+            gpuprocs = list(self.gpu_processes)
+        # Temporarily swap in the snapshot so _draw_* helpers read it
+        _saved_sys = self.system_data
+        _saved_gpu = self.gpu_data
+        _saved_procs = self.gpu_processes
+        self.system_data = sysdata
+        self.gpu_data = gpudata
+        self.gpu_processes = gpuprocs
+        try:
+            self._draw_frame(stdscr)
+        finally:
+            self.system_data = _saved_sys
+            self.gpu_data = _saved_gpu
+            self.gpu_processes = _saved_procs
+
+    def _draw_frame(self, stdscr) -> None:
+        """Draw a single frame — called from draw() with data held stable."""
         try:
             curses.curs_set(0)
         except curses.error:
@@ -1467,6 +1532,10 @@ class TermMon:
                     self.process_scroll_x = max(0, self.process_scroll_x - 16)
                     self.draw(stdscr)
         finally:
+            # Stop the background stats thread cleanly
+            self.running = False
+            if self._stats_thread is not None:
+                self._stats_thread.join(timeout=2)
             curses.nocbreak()
             stdscr.keypad(False)
             curses.echo()

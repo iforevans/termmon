@@ -130,12 +130,18 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.9.1 (2026-07-07)
+- **Threading safety fix**: `self._stats_lock` now actually protects data access
+  - Background thread collects stats into local vars, then swaps atomically under lock
+  - `draw()` snapshots data under the lock before rendering — no more torn reads
+  - Clean shutdown: background thread joined in `finally` block before exit
+- **Cleanup**: Removed duplicate `import threading` inside `__init__`
+
 ### v1.9.0 (2026-07-07)
 - **Instant scroll response on macOS**: Refactored to use background thread for stats updates
   - `update_stats()` now signals background thread instead of blocking
   - Scroll keys (`←`/`→`) redraw immediately without waiting for GPU queries
   - `getch()` timeout (50ms) instead of `nodelay()` + sleep pattern
-- **Code quality**: Added type hints, proper threading with lock protection
 - **Non-blocking architecture**: Stats update every 100ms in background thread
 - **Performance**: Scroll response now instant even with slow GPU monitoring tools
 
