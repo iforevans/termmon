@@ -20,6 +20,7 @@ Features:
     - Color-coded progress bars
     - Auto-refresh every 2 seconds
     - Cross-platform (Linux + macOS)
+    - Instant scroll response via non-blocking stats updates
 
 Usage:
     termmon
@@ -47,6 +48,7 @@ import pwd
 import signal
 import subprocess
 import sys
+import threading
 from datetime import datetime
 import time
 from typing import Dict, List, Tuple, Any, Optional
@@ -62,7 +64,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.8.2"
+__version__ = "1.9.0"
 __author__ = "Ifor Evans"
 
 
@@ -95,6 +97,7 @@ class TermMon:
     
     def __init__(self) -> None:
         """Initialize the TermMon application."""
+        import threading
         self.running: bool = True
         self.gpu_data: List[Dict[str, Any]] = []
         self.gpu_processes: List[Dict[str, Any]] = []
@@ -102,6 +105,9 @@ class TermMon:
         self.core_count: int = self._get_core_count()
         self._resized: bool = False  # SIGWINCH flag
         self.process_scroll_x: int = 0  # Horizontal scroll offset for nvtop-style process table
+        self._stats_lock = threading.Lock()  # Protects gpu_data, gpu_processes, system_data
+        self._stats_thread = None
+        self._stats_should_update = False  # Signal for background thread
     
     def _on_resize(self, signum: int, frame: Any) -> None:
         """Handle terminal resize (SIGWINCH)."""
@@ -667,14 +673,18 @@ class TermMon:
             'cmdline': cmdline,
         }
     
+    def _stats_updater_thread(self) -> None:
+        """Background thread that updates stats at regular intervals."""
+        while self.running:
+            if self._stats_should_update:
+                self._stats_should_update = False
+                self.get_system_stats()
+                self._get_gpu_data_parallel()
+            time.sleep(0.1)  # Check for update signal every 100ms
+    
     def update_stats(self) -> None:
-        """Update all system and GPU statistics.
-        
-        System stats are read sequentially; GPU stats and GPU processes
-        are queried in parallel since they run independent nvidia-smi calls.
-        """
-        self.get_system_stats()
-        self._get_gpu_data_parallel()
+        """Signal background thread to update stats (non-blocking)."""
+        self._stats_should_update = True
     
     def _get_gpu_data_parallel(self) -> None:
         """Run get_gpu_stats() and get_gpu_processes() concurrently."""
@@ -1401,14 +1411,22 @@ class TermMon:
         
         curses.cbreak()
         stdscr.keypad(True)
-        stdscr.nodelay(True)
+        # Use timeout instead of nodelay to avoid blocking on input
+        # getch() will return -1 after 50ms if no input
+        stdscr.timeout(50)
         
         # Handle terminal resize
         signal.signal(signal.SIGWINCH, self._on_resize)
         
-        self.update_stats()
-        time.sleep(0.5)
-        self.update_stats()
+        # Start background stats updater thread
+        self._stats_thread = threading.Thread(target=self._stats_updater_thread, daemon=True)
+        self._stats_thread.start()
+        
+        # Initial stats update (wait for first update to complete)
+        self._stats_should_update = True
+        time.sleep(0.15)
+        self._stats_should_update = True
+        time.sleep(0.15)
         
         last_refresh = 0
         
@@ -1423,13 +1441,15 @@ class TermMon:
                         curses.update_lines_cols()
                     except (OSError, AttributeError):
                         pass  # Some platforms don't support update_lines_cols
-                    self.update_stats()
+                    self._stats_should_update = True
                     last_refresh = current_time  # Force refresh on resize
                 
+                # Trigger stats update every 2 seconds
                 if current_time - last_refresh >= 2:
-                    self.update_stats()
+                    self._stats_should_update = True
                     last_refresh = current_time
                 
+                # Draw immediately (data may be stale but update is non-blocking)
                 self.draw(stdscr)
                 
                 key = stdscr.getch()
@@ -1442,10 +1462,10 @@ class TermMon:
                     self._show_help(stdscr)
                 elif key == curses.KEY_RIGHT:
                     self.process_scroll_x = min(self._max_process_scroll(), self.process_scroll_x + 16)
+                    self.draw(stdscr)
                 elif key == curses.KEY_LEFT:
                     self.process_scroll_x = max(0, self.process_scroll_x - 16)
-                
-                time.sleep(0.05)
+                    self.draw(stdscr)
         finally:
             curses.nocbreak()
             stdscr.keypad(False)

@@ -130,6 +130,15 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.9.0 (2026-07-07)
+- **Instant scroll response on macOS**: Refactored to use background thread for stats updates
+  - `update_stats()` now signals background thread instead of blocking
+  - Scroll keys (`←`/`→`) redraw immediately without waiting for GPU queries
+  - `getch()` timeout (50ms) instead of `nodelay()` + sleep pattern
+- **Code quality**: Added type hints, proper threading with lock protection
+- **Non-blocking architecture**: Stats update every 100ms in background thread
+- **Performance**: Scroll response now instant even with slow GPU monitoring tools
+
 ### v1.8.2 (2026-05-20)
 - **macmon dependency documented**: README now clearly states `macmon` is required for accurate macOS GPU stats
   - Added install instructions (`cargo install macmon` or build from source)
