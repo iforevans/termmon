@@ -130,6 +130,15 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.10.0 (2026-07-08)
+- **Bug fix: nvidia-smi CSV parsing**: GPU names containing commas (e.g. "Tesla V100-SXM2, 32GB") no longer break the parser
+  - Now parses index from the left and 6 numeric fields from the right, treating everything in between as the name
+- **Threading improvement**: replaced `_stats_should_update` boolean with `threading.Event()`
+  - Background thread blocks on `wait(timeout=0.1)` instead of busy-polling — more efficient, race-free signaling
+- **Cleanup**: removed dead `get_system_stats()` method (~48 lines), unused `Optional` import, unused color pairs (`COLOR_ERROR`, `COLOR_PROCESS`), redundant local `import pwd`
+- **UI consistency**: memory section data rows now have the same 1-space padding as CPU/GPU sections
+- **Net result**: 47 fewer lines, same functionality, fewer bugs
+
 ### v1.9.1 (2026-07-07)
 - **Threading safety fix**: `self._stats_lock` now actually protects data access
   - Background thread collects stats into local vars, then swaps atomically under lock

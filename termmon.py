@@ -51,7 +51,7 @@ import sys
 import threading
 from datetime import datetime
 import time
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Tuple, Any
 
 try:
     import psutil
@@ -64,7 +64,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.9.1"
+__version__ = "1.10.0"
 __author__ = "Ifor Evans"
 
 
@@ -79,9 +79,7 @@ COLOR_MEMORY = 2        # Green - RAM usage bar
 COLOR_SWAP = 3          # Yellow - swap usage bar
 COLOR_CPU = 4           # Cyan - CPU usage bar
 COLOR_VRAM = 5          # Magenta - VRAM usage bar
-COLOR_ERROR = 6         # Red - error messages
-COLOR_PROCESS = 7       # Blue - GPU process list
-COLOR_POPUP = 8         # White on blue - help popup
+COLOR_POPUP = 6         # White on blue - help popup
 
 # NVIDIA GPU query fields (must match nvidia-smi output order)
 GPU_QUERY_FIELDS = "index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw"
@@ -106,7 +104,7 @@ class TermMon:
         self.process_scroll_x: int = 0  # Horizontal scroll offset for nvtop-style process table
         self._stats_lock = threading.Lock()  # Protects gpu_data, gpu_processes, system_data
         self._stats_thread = None
-        self._stats_should_update = False  # Signal for background thread
+        self._stats_update_event = threading.Event()  # Signal for background thread
     
     def _on_resize(self, signum: int, frame: Any) -> None:
         """Handle terminal resize (SIGWINCH)."""
@@ -117,54 +115,6 @@ class TermMon:
         """Read CPU core count (cross-platform)."""
         return psutil.cpu_count() or 0
         
-    def get_system_stats(self) -> None:
-        """
-        Read system memory and CPU statistics (cross-platform via psutil).
-
-        Uses psutil for virtual memory, swap, and per-core CPU utilization.
-        Calculates CPU usage using delta between samples for accurate
-        real-time measurement.
-        """
-        try:
-            # Memory via psutil (cross-platform)
-            vm = psutil.virtual_memory()
-            swap = psutil.swap_memory()
-
-            total_mem_gb = vm.total / 1024 / 1024 / 1024
-            used_mem_gb = vm.used / 1024 / 1024 / 1024
-            avail_mem_gb = vm.available / 1024 / 1024 / 1024
-            mem_percent = vm.percent
-
-            # Swap - some platforms report swap as percentage directly,
-            # others as bytes. Normalise to MB.
-            swap_total_mb = swap.total / 1024 / 1024
-            swap_used_mb = swap.used / 1024 / 1024
-            swap_percent = swap.percent
-
-            # Per-core CPU usage (cross-platform)
-            # psutil.cpu_percent(percpu=True) returns a list of per-core
-            # percentages. First call returns 0.0; subsequent calls give
-            # the real delta-based reading.
-            per_core_raw = psutil.cpu_percent(percpu=True)
-            per_core_usage = list(enumerate(per_core_raw))
-
-            self.system_data = {
-                'total_mem_gb': total_mem_gb,
-                'used_mem_gb': used_mem_gb,
-                'avail_mem_gb': avail_mem_gb,
-                'mem_percent': mem_percent,
-                'swap_total_mb': swap_total_mb,
-                'swap_used_mb': swap_used_mb,
-                'swap_percent': swap_percent,
-                'cpu_usage': sum(per_core_raw) / max(len(per_core_raw), 1),
-                'core_count': self.core_count,
-                'per_core_usage': per_core_usage
-            }
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            self.system_data['error'] = str(e)
-    
     # ------------------------------------------------------------------ #
     #  GPU backends — auto-detected at init, swappable for testing       #
     # ------------------------------------------------------------------ #
@@ -249,23 +199,37 @@ class TermMon:
         if result.returncode == 0:
             gpus = []
             for gpu in result.stdout.strip().split('\n'):
-                parts = [p.strip() for p in gpu.split(',')]
-                if len(parts) >= 8:
-                    try:
-                        gpus.append({
-                            'idx': parts[0],
-                            'name': parts[1],
-                            'mem_total': float(parts[2]),
-                            'mem_used': float(parts[3]),
-                            'mem_free': float(parts[4]),
-                            'gpu_util': float(parts[5]),
-                            'temp': float(parts[6]),
-                            'power': float(parts[7]),
-                            'gpu_cores': 0,
-                            'is_uma': False,
-                        })
-                    except (ValueError, IndexError):
-                        pass
+                if not gpu.strip():
+                    continue
+                # Split on comma — GPU names can contain commas, so parse
+                # carefully: field 1 is always index (no comma), fields 3-8
+                # are numeric (no commas). The name is everything between
+                # field 1 and field 3.
+                parts = gpu.split(',')
+                if len(parts) < 8:
+                    continue
+                try:
+                    idx = parts[0].strip()
+                    # Last 6 fields are numeric: mem_total, mem_used, mem_free,
+                    # gpu_util, temp, power
+                    numeric = parts[-6:]
+                    # Name is everything between idx and the first numeric field
+                    name_parts = parts[1:len(parts) - 6]
+                    name = ','.join(p.strip() for p in name_parts).strip()
+                    gpus.append({
+                        'idx': idx,
+                        'name': name,
+                        'mem_total': float(numeric[0].strip()),
+                        'mem_used': float(numeric[1].strip()),
+                        'mem_free': float(numeric[2].strip()),
+                        'gpu_util': float(numeric[3].strip()),
+                        'temp': float(numeric[4].strip()),
+                        'power': float(numeric[5].strip()),
+                        'gpu_cores': 0,
+                        'is_uma': False,
+                    })
+                except (ValueError, IndexError):
+                    pass
             self.gpu_data = gpus
         else:
             self.gpu_data = []
@@ -634,10 +598,9 @@ class TermMon:
             except (psutil.AccessDenied, AttributeError):
                 # Fallback: try pwd lookup on Linux
                 try:
-                    import pwd as _pwd
                     uid = p.uids().real
-                    user = _pwd.getpwuid(uid).pw_name
-                except (KeyError, NameError, psutil.NoSuchProcess):
+                    user = pwd.getpwuid(uid).pw_name
+                except (KeyError, psutil.NoSuchProcess):
                     pass
 
             # Host memory (RSS in MB)
@@ -675,15 +638,15 @@ class TermMon:
     def _stats_updater_thread(self) -> None:
         """Background thread that updates stats at regular intervals."""
         while self.running:
-            if self._stats_should_update:
-                self._stats_should_update = False
+            if self._stats_update_event.wait(timeout=0.1):
+                self._stats_update_event.clear()
                 # Collect into local copies so we don't hold the lock during
                 # expensive subprocess-adjacent system calls (nvidia-smi, etc.)
                 new_sysdata = {}
                 new_gpus = []
                 new_procs = []
 
-                # --- system stats (inlined from get_system_stats) ---
+                # --- system stats (collected inline in background thread) ---
                 try:
                     vm = psutil.virtual_memory()
                     swap = psutil.swap_memory()
@@ -724,11 +687,9 @@ class TermMon:
                     self.gpu_data = new_gpus
                     self.gpu_processes = new_procs
 
-            time.sleep(0.1)  # Check for update signal every 100ms
-    
     def update_stats(self) -> None:
         """Signal background thread to update stats (non-blocking)."""
-        self._stats_should_update = True
+        self._stats_update_event.set()
     
     def _get_gpu_data_parallel(self) -> None:
         """Run get_gpu_stats() and get_gpu_processes() concurrently."""
@@ -1008,39 +969,32 @@ class TermMon:
             # Box header
             stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
             y += 1
-            stdscr.addstr(y, x, "│ SYSTEM MEMORY".ljust(BOX_WIDTH - 1) + "│")
+            stdscr.addstr(y, x, ("│ SYSTEM MEMORY").ljust(BOX_WIDTH - 1) + "│")
             y += 1
             stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
             y += 1
             
-            # Calculate column positions
-            # Left: "│ Mem:" (6) + bar (20) + info (~15) = ~41 chars
-            # Right starts after that
-            left_col_width = 6 + BAR_WIDTH + 16  # ~42 chars
-            right_col_start = x + left_col_width
-            
-            # Memory (left column)
+            # Memory (left column) — 1-space side padding consistent with CPU/process sections
             mem_pct = self.system_data.get('mem_percent', 0)
             used_gb = self.system_data.get('used_mem_gb', 0)
             total_gb = self.system_data.get('total_mem_gb', 0)
-            
-            label = "│ Mem:"
-            stdscr.addstr(y, x, label)
-            self.draw_bar(stdscr, y, x + 6, mem_pct, BAR_WIDTH, COLOR_MEMORY)
+
+            stdscr.addstr(y, x, "│ Mem:")
+            self.draw_bar(stdscr, y, x + 7, mem_pct, BAR_WIDTH, COLOR_MEMORY)
             mem_info = f" {used_gb:5.1f}GB/{total_gb:4.1f}G {mem_pct:5.1f}%"
-            stdscr.addstr(y, x + 6 + BAR_WIDTH, mem_info)
-            
+            stdscr.addstr(y, x + 7 + BAR_WIDTH, mem_info)
+
             # Swap (right column)
             swap_pct = self.system_data.get('swap_percent', 0)
             swap_used_gb = self.system_data.get('swap_used_mb', 0) / 1024
             swap_total_gb = self.system_data.get('swap_total_mb', 0) / 1024
-            
-            right_label = "Swap:"
-            stdscr.addstr(y, right_col_start, right_label)
+
+            right_col_start = x + 7 + BAR_WIDTH + 16  # after "│ Mem:" + bar + info
+            stdscr.addstr(y, right_col_start, "Swap:")
             self.draw_bar(stdscr, y, right_col_start + 5, swap_pct, BAR_WIDTH, COLOR_SWAP)
             swap_info = f" {swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB {swap_pct:5.1f}%"
             stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, swap_info)
-            
+
             # Close the box
             stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
             y += 1
@@ -1199,7 +1153,7 @@ class TermMon:
                     gpu_cores = gpu.get('gpu_cores', 0)
 
                     # Calculate column positions
-                    left_col_width = 42  # GPU name takes ~42 chars
+                    left_col_width = 43  # GPU name takes ~43 chars (shifted +1 for padding)
                     right_col_start = x + left_col_width
 
                     # Row 1: GPU name (left) | Temp + Power (right) - SAME LINE
@@ -1228,9 +1182,9 @@ class TermMon:
                     # Left column: Util
                     left_label = "│ Util:"
                     stdscr.addstr(y, x, left_label)
-                    self.draw_bar(stdscr, y, x + 6, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
+                    self.draw_bar(stdscr, y, x + 7, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
                     util_info = f" {gpu['gpu_util']:6.1f}%"
-                    stdscr.addstr(y, x + 6 + BAR_WIDTH, util_info)
+                    stdscr.addstr(y, x + 7 + BAR_WIDTH, util_info)
 
                     # Right column: VRAM (NVIDIA) or UMA info (Apple)
                     if is_uma:
@@ -1382,7 +1336,8 @@ class TermMon:
             sysdata = dict(self.system_data)
             gpudata = list(self.gpu_data)
             gpuprocs = list(self.gpu_processes)
-        # Temporarily swap in the snapshot so _draw_* helpers read it
+        # Temporarily swap in the snapshot so _draw_* helpers read it,
+        # then restore originals in a finally block.
         _saved_sys = self.system_data
         _saved_gpu = self.gpu_data
         _saved_procs = self.gpu_processes
@@ -1470,8 +1425,6 @@ class TermMon:
         curses.init_pair(COLOR_SWAP, curses.COLOR_YELLOW, -1)
         curses.init_pair(COLOR_CPU, curses.COLOR_CYAN, -1)
         curses.init_pair(COLOR_VRAM, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(COLOR_ERROR, curses.COLOR_RED, -1)
-        curses.init_pair(COLOR_PROCESS, curses.COLOR_BLUE, -1)
         curses.init_pair(COLOR_POPUP, curses.COLOR_WHITE, curses.COLOR_BLUE)  # White on blue
         
         curses.cbreak()
@@ -1488,9 +1441,9 @@ class TermMon:
         self._stats_thread.start()
         
         # Initial stats update (wait for first update to complete)
-        self._stats_should_update = True
+        self._stats_update_event.set()
         time.sleep(0.15)
-        self._stats_should_update = True
+        self._stats_update_event.set()
         time.sleep(0.15)
         
         last_refresh = 0
@@ -1506,12 +1459,12 @@ class TermMon:
                         curses.update_lines_cols()
                     except (OSError, AttributeError):
                         pass  # Some platforms don't support update_lines_cols
-                    self._stats_should_update = True
+                    self._stats_update_event.set()
                     last_refresh = current_time  # Force refresh on resize
-                
+
                 # Trigger stats update every 2 seconds
                 if current_time - last_refresh >= 2:
-                    self._stats_should_update = True
+                    self._stats_update_event.set()
                     last_refresh = current_time
                 
                 # Draw immediately (data may be stale but update is non-blocking)
