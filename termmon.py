@@ -9,7 +9,7 @@ single dashboard.
 
 Originally created to solve the problem of monitoring CPU/system RAM/swap
 and GPU/VRAM usage from one window while testing local AI models on an
-RTX3090/24GB.
+RTX 3090/24GB, now running on RTX A6000/48GB.
 
 Features:
     - System memory monitoring (RAM + swap in GB)

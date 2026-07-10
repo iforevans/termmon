@@ -2,7 +2,7 @@
 
 A unified terminal-based system monitor combining `htop` (system RAM/CPU) and `nvidia-smi` (GPU/VRAM) functionality into a single dashboard.
 
-Originally created to solve the problem of monitoring CPU/system RAM/swap and GPU/VRAM usage from one window while testing local AI models on an RTX3090/24GB.
+Originally created to solve the problem of monitoring CPU/system RAM/swap and GPU/VRAM usage from one window while testing local AI models on an RTX 3090/24GB, now running on RTX A6000/48GB.
 
 ## Features
 
@@ -62,33 +62,34 @@ Simply run `termmon` and watch your system resources in real-time.
 ## Display Layout
 
 ```
- termmon - System Monitor | HH:MM:SS | q:quit r:refresh h:help
+ termmon 1.10.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
 ┌────────────────────────────────────────────────────────────────┐
 │ SYSTEM MEMORY                                                  │
 │────────────────────────────────────────────────────────────────│
-│ Mem:  ████████████████████░░░░  12.5GB/15.4G  81.2%           │
-│ Swap: ██████████████████░░░░░░   2.5/4.0GB  62.5%             │
+│ Mem: ████████████████████░░░░ 12.5GB/15.4G 81.2% Swap: ████░░  2.7/4.3GB 62.5% │
 └────────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────────┐
 │ CPU (8 cores, overall  23.4%)                                  │
 │────────────────────────────────────────────────────────────────│
-│Core 0:  █████░░░░░░░░░░░░░░░░░  23.4%  Core 4:  ██░░░░░░   9.8%│
-│Core 1:  ███████░░░░░░░░░░░░░░░  31.0%  Core 5:  ███░░░░░  15.2%│
-│ ... (all cores)                                                │
+│ Core 0:█████░░░░░░░░░  23.4%   Core 4:██░░░░░░░░░░░   9.8%    │
+│ Core 1:███████░░░░░░░  31.0%   Core 5:███░░░░░░░░░░  15.2%    │
+│ Core 2:███░░░░░░░░░░░  12.8%   Core 6:█░░░░░░░░░░░░    4.3%    │
+│ Core 3:█████░░░░░░░░░  24.5%   Core 7:░░░░░░░░░░░░░    0.0%    │
 └────────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────────┐
 │ NVIDIA GPU(s)                                                  │
 │────────────────────────────────────────────────────────────────│
-│ GPU 0: NVIDIA GeForce RTX 3090                  Temp:  59°C  Power: 110.2W │
-│ Util: ████████░░░░░░░░░░░░░░░░  80.0%   VRAM: ████████░░ 22.0GB/24.0G  91.7% │
+│GPU 0: NVIDIA RTX A6000                       Temp:  59°C  Power: 110.2W│
+││ Util:████████░░░░░░░░░░░░░░  80.0% VRAM:████████░░ 42.8GB/48.0G 89.2%│
 └────────────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────────────┐
-│ GPU PROCESSES (nvtop-style)                                    │
+│ GPU PROCESSES  ←/→ scroll 0                                    │
 │────────────────────────────────────────────────────────────────│
-│PID     USER     DEV TYPE   GPU  GPU MEM    CPU HOST MEM Command│
+│ PID     USER     DEV TYPE    GPU  GPU MEM    CPU HOST MEM Command│
 │────────────────────────────────────────────────────────────────│
-│86775   iforevan 0   C       --   39506M  12.3%    7768M llama-s│
+│54321   iforevans 0   C      45.2%  39506M  12.3%   7768M llama-server --model ...│
 └────────────────────────────────────────────────────────────────┘
+ Refresh: 2s | q:quit r:refresh h:help ←/→:process scroll
 ```
 
 ## Color Scheme
