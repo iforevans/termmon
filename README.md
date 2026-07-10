@@ -62,7 +62,7 @@ Simply run `termmon` and watch your system resources in real-time.
 ## Display Layout
 
 ```
- termmon 1.10.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+ termmon 1.10.1 - System Monitor | 14:32:07 | q:quit r:refresh h:help
 ┌────────────────────────────────────────────────────────────────┐
 │ SYSTEM MEMORY                                                  │
 │────────────────────────────────────────────────────────────────│
@@ -130,6 +130,15 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
+
+### v1.10.1 (2026-07-10)
+- **README display layout mockup updated**: ASCII mockup now accurately reflects v1.10.0 UI
+  - Memory section shows Mem/Swap on same line (two-column layout)
+  - CPU cores show compact bar format matching actual rendering
+  - GPU section shows compact 2-row layout with Util+VRAM side-by-side
+  - GPU processes section shows ←/→ scroll indicator and correct column format
+  - Footer reverse-status bar added
+  - Hardware reference updated: RTX 3090/24GB → RTX A6000/48GB
 
 ### v1.10.0 (2026-07-08)
 - **Bug fix: nvidia-smi CSV parsing**: GPU names containing commas (e.g. "Tesla V100-SXM2, 32GB") no longer break the parser
