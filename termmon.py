@@ -44,7 +44,6 @@ import concurrent.futures
 import json
 import os
 import platform
-import pwd
 import signal
 import subprocess
 import sys
@@ -530,54 +529,71 @@ class TermMon:
         activity (best-effort). On macOS, there's no per-process GPU memory
         query without sudo. We show the top CPU-intensive processes as a
         proxy, since GPU-bound workloads also show CPU activity.
+
+        Two-pass approach: first pass collects cheap metadata only, sorts,
+        and picks top-N; second pass enriches those with cmdline() to avoid
+        iterating all processes with expensive per-process calls.
         """
         processes = []
         try:
-            for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info']):
+            # --- Pass 1: collect cheap metadata ---
+            candidates = []
+            for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
                 try:
                     info = proc.info
                     pid = info['pid']
                     if pid is None:
                         continue
 
-                    # Try to get user
-                    try:
-                        username = proc.username()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        username = 'unknown'
-
-                    # Memory
                     mem_info = info.get('memory_info')
                     host_mem = (mem_info.rss / 1024 / 1024) if mem_info else 0.0
 
-                    # CPU
-                    cpu_pct = info.get('cpu_percent') or 0.0
-
-                    # Command line
-                    try:
-                        cmdline = ' '.join(proc.cmdline())
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        cmdline = ''
-
-                    # GPU memory: not available per-process on Apple Silicon
-                    # without sudo. We use host RSS as a proxy.
-                    gpu_mem = 0.0
-
-                    processes.append({
+                    candidates.append({
                         'pid': pid,
-                        'user': username,
-                        'mem_used': gpu_mem,
                         'host_mem': host_mem,
-                        'cpu_pct': cpu_pct,
                         'process_name': info.get('name', 'unknown') or 'unknown',
-                        'cmdline': cmdline,
                     })
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 
-            # Sort by host memory as proxy for GPU activity
-            processes.sort(key=lambda x: x['host_mem'], reverse=True)
-            self.gpu_processes = processes[:MAX_GPU_PROCS]
+            # Sort by host memory as proxy for GPU activity, take top-N
+            candidates.sort(key=lambda x: x['host_mem'], reverse=True)
+            top_n = candidates[:MAX_GPU_PROCS]
+
+            # --- Pass 2: enrich top-N with user + cmdline ---
+            for c in top_n:
+                pid = c['pid']
+                username = 'unknown'
+                cpu_pct = 0.0
+                cmdline = ''
+                try:
+                    p = psutil.Process(pid)
+                    try:
+                        username = p.username()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                    try:
+                        cpu_pct = p.cpu_percent(interval=None)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                    try:
+                        cmdline = ' '.join(p.cmdline())
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                except psutil.NoSuchProcess:
+                    pass
+
+                processes.append({
+                    'pid': pid,
+                    'user': username,
+                    'mem_used': 0.0,
+                    'host_mem': c['host_mem'],
+                    'cpu_pct': cpu_pct,
+                    'process_name': c['process_name'],
+                    'cmdline': cmdline,
+                })
+
+            self.gpu_processes = processes
         except Exception:
             self.gpu_processes = []
 
@@ -598,8 +614,9 @@ class TermMon:
             except (psutil.AccessDenied, AttributeError):
                 # Fallback: try pwd lookup on Linux
                 try:
+                    import pwd as _pwd
                     uid = p.uids().real
-                    user = pwd.getpwuid(uid).pw_name
+                    user = _pwd.getpwuid(uid).pw_name
                 except (KeyError, psutil.NoSuchProcess):
                     pass
 
@@ -610,9 +627,9 @@ class TermMon:
             except (psutil.AccessDenied, psutil.NoSuchProcess):
                 pass
 
-            # CPU %
+            # CPU % — non-blocking; requires prior seeding call
             try:
-                cpu_pct = p.cpu_percent(interval=0.1)
+                cpu_pct = p.cpu_percent(interval=None)
             except (psutil.AccessDenied, psutil.NoSuchProcess):
                 pass
 
@@ -829,143 +846,6 @@ class TermMon:
         # Restore nodelay for main loop
         stdscr.nodelay(True)
     
-    def _wrap_command(self, cmd: str, width: int) -> List[str]:
-        """
-        Word-wrap a command string to fit within `width` columns.
-
-        Handles:
-        - Long paths split on '/' with proper rejoining across lines
-        - Flag-value pairing (--flag value stays together on one line)
-        - Flag + multi-segment path (continuation segments tracked via __PCONT__)
-        - Multiple/extra spaces normalized away
-        - Single words exceeding width are hard-chunked as last resort
-
-        Args:
-            cmd: The command string to wrap
-            width: Maximum line width in columns
-
-        Returns:
-            List of lines, each <= width characters
-        """
-        if not cmd or not cmd.strip():
-            return [""]
-
-        # Short internal markers (prefix length = len(marker))
-        PSG = "__PSG__"
-        PCONT = "__PCONT__"
-        FV = "__FLAGVAL__"
-
-        # Split on whitespace (handles multiple spaces, tabs, etc.)
-        cmd_words = cmd.split()
-
-        # Phase 1: Split long path-like words on '/' for readability
-        MAX_WORD_LEN = 50
-        expanded_words: List[str] = []
-        for word in cmd_words:
-            if len(word) > MAX_WORD_LEN and '/' in word:
-                parts = [p for p in word.split('/') if p]
-                if parts:
-                    for part in parts:
-                        expanded_words.append(f"{PSG}{part}")
-                else:
-                    expanded_words.append(word)
-            else:
-                expanded_words.append(word)
-
-        # Phase 2: Flag-value pairing
-        # A flag starts with '-'. It pairs with the next non-flag token.
-        # For flag + path segments: pair with first segment, mark rest as PCONT
-        # so they can wrap independently while maintaining / joins.
-        paired_words: List[str] = []
-        i = 0
-        while i < len(expanded_words):
-            word = expanded_words[i]
-            is_flag = word.startswith('-') and not word.startswith(PSG)
-            if is_flag and i + 1 < len(expanded_words):
-                next_word = expanded_words[i + 1]
-                next_is_flag = next_word.startswith('-') and not next_word.startswith(PSG)
-                if not next_is_flag:
-                    if next_word.startswith(PSG):
-                        val = next_word[len(PSG):]
-                        paired_words.append(f"{word}{FV}{val}")
-                        j = i + 2
-                        while j < len(expanded_words) and expanded_words[j].startswith(PSG):
-                            paired_words.append(f"{PCONT}{expanded_words[j][len(PSG):]}")
-                            j += 1
-                        i = j
-                    else:
-                        paired_words.append(f"{word}{FV}{next_word}")
-                        i += 2
-                    continue
-            paired_words.append(word)
-            i += 1
-
-        # Phase 3: Word wrapping with path context tracking
-        lines: List[str] = []
-        current_line = ""
-        in_path = False
-
-        for token in paired_words:
-            is_psg = token.startswith(PSG)
-            is_pcont = token.startswith(PCONT)
-            is_flag_pair = FV in token and not is_psg
-
-            # Resolve display text and whether this token is a path segment
-            token_in_path = False
-            if is_psg:
-                display = token[len(PSG):]
-                token_in_path = True
-            elif is_pcont:
-                display = token[len(PCONT):]
-                token_in_path = True
-            elif is_flag_pair:
-                parts = token.split(FV, 1)
-                val = parts[1]
-                was_path = val.startswith(PSG)
-                if was_path:
-                    val = val[len(PSG):]
-                display = parts[0] + " " + val
-                token_in_path = was_path  # True if value came from path segments
-            else:
-                display = token
-
-            if not current_line:
-                current_line = display
-                in_path = token_in_path
-            elif in_path and token_in_path:
-                # Both in path context: join with /
-                if len(current_line) + 1 + len(display) <= width:
-                    current_line += "/" + display
-                else:
-                    lines.append(current_line)
-                    current_line = display
-                    in_path = True
-            elif len(current_line) + 1 + len(display) <= width:
-                # Normal fit — PCONT after a path start should join with /
-                if token_in_path and is_pcont:
-                    current_line += "/" + display
-                else:
-                    current_line += " " + display
-                    in_path = token_in_path
-            else:
-                lines.append(current_line)
-                current_line = display
-                in_path = token_in_path
-
-        if current_line:
-            lines.append(current_line)
-
-        # Phase 4: Hard-chunk any remaining lines still exceeding width
-        final_lines: List[str] = []
-        for line in lines:
-            if len(line) > width:
-                for chunk_start in range(0, len(line), width):
-                    final_lines.append(line[chunk_start:chunk_start + width])
-            else:
-                final_lines.append(line)
-
-        return final_lines
-
     def _draw_memory_section(self, stdscr, y: int, x: int, snapshot: Dict[str, Any], bw: int) -> int:
         """
         Draw the system memory monitoring section (Mem and Swap in 2 columns).
@@ -1466,10 +1346,16 @@ class TermMon:
                 # Handle terminal resize
                 if self._resized:
                     self._resized = False
+                    h, w = stdscr.getmaxyx()
                     try:
-                        curses.update_lines_cols()
-                    except (OSError, AttributeError):
-                        pass  # Some platforms don't support update_lines_cols
+                        curses.resizeterm(h, w)
+                    except curses.error:
+                        # Fallback for platforms without resizeterm
+                        try:
+                            curses.update_lines_cols()
+                            stdscr.clear()
+                        except (OSError, AttributeError):
+                            pass
                     self._stats_update_event.set()
                     last_refresh = current_time  # Force refresh on resize
 
