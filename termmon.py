@@ -45,12 +45,16 @@ import json
 import os
 import platform
 import signal
+import shutil
 import subprocess
 import sys
 import threading
 from datetime import datetime
+import logging
 import time
 from typing import Dict, List, Tuple, Any
+
+logger = logging.getLogger(__name__)
 
 try:
     import psutil
@@ -63,7 +67,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.11.0"
+__version__ = "1.12.0"
 __author__ = "Ifor Evans"
 
 
@@ -697,7 +701,8 @@ class TermMon:
             except KeyboardInterrupt:
                 raise
             except Exception as e:
-                new_sysdata = {'error': str(e)}
+                logger.error("Failed to collect system stats: %s", e)
+                new_sysdata = {}
 
             # --- GPU stats + processes (parallel) ---
             try:
@@ -1331,17 +1336,22 @@ class TermMon:
         self._stats_thread = threading.Thread(target=self._stats_updater_thread, daemon=True)
         self._stats_thread.start()
         
+        # Seed cpu_percent for all processes so first read returns real values
+        for proc in psutil.process_iter():
+            try:
+                proc.cpu_percent(interval=None)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
         # Initial stats update (wait for first update to complete)
         self._stats_update_event.set()
-        time.sleep(0.15)
-        self._stats_update_event.set()
-        time.sleep(0.15)
-        
-        last_refresh = 0
+        time.sleep(0.5)
+
+        last_refresh = time.monotonic()
         
         try:
             while self.running:
-                current_time = time.time()
+                current_time = time.monotonic()
                 
                 # Handle terminal resize
                 if self._resized:
@@ -1400,18 +1410,8 @@ if __name__ == "__main__":
 
     # Warn on macOS if no GPU monitoring tool is available
     if _IS_MACOS:
-        has_macmon = False
-        has_socpwrbud = False
-        try:
-            subprocess.run(['which', 'macmon'], capture_output=True, timeout=3)
-            has_macmon = True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-        try:
-            subprocess.run(['which', 'socpwrbud'], capture_output=True, timeout=3)
-            has_socpwrbud = True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        has_macmon = shutil.which('macmon') is not None
+        has_socpwrbud = shutil.which('socpwrbud') is not None
         if not has_macmon and not has_socpwrbud:
             print(
                 "Note: GPU utilization will show 0% without sudo on macOS 13+.\n"

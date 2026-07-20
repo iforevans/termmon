@@ -62,7 +62,7 @@ Simply run `termmon` and watch your system resources in real-time.
 ## Display Layout
 
 ```
- termmon 1.11.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+  termmon 1.12.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
 ┌────────────────────────────────────────────────────────────────┐
 │ SYSTEM MEMORY                                                  │
 │────────────────────────────────────────────────────────────────│
@@ -131,6 +131,13 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
+
+### v1.12.0 (2026-07-20)
+- **cpu_percent seeding**: All processes are seeded on startup so the first `cpu_percent(interval=None)` read returns real values instead of 0
+- **Structured logging**: Replaced swallowed exception in stats thread with `logging.error()` — collection failures are now visible in logs
+- **Consistent timing**: Main loop switched from `time.time()` to `time.monotonic()`, matching the background thread. Eliminates drift if the system clock jumps.
+- **Cleaner startup**: Removed redundant second event fire + dead sleep at startup. Single event + 0.5s sleep is sufficient.
+- **Startup tool detection**: Replaced `subprocess.run(['which', ...])` with `shutil.which()`, avoiding unnecessary process forks.
 
 ### v1.11.0 (2026-07-20)
 - **Thread safety: eliminated race condition in draw()**
