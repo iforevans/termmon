@@ -64,12 +64,11 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.10.1"
+__version__ = "1.11.0"
 __author__ = "Ifor Evans"
 
 
 # Layout configuration
-BOX_WIDTH = 0          # Will be auto-calculated based on terminal width (80% of terminal)
 BAR_WIDTH = 20         # Width of progress bars
 REFRESH_INTERVAL = 2   # Seconds between auto-refreshes
 
@@ -105,6 +104,7 @@ class TermMon:
         self._stats_lock = threading.Lock()  # Protects gpu_data, gpu_processes, system_data
         self._stats_thread = None
         self._stats_update_event = threading.Event()  # Signal for background thread
+        self._box_width: int = 80  # Computed per-frame in _draw_frame
     
     def _on_resize(self, signum: int, frame: Any) -> None:
         """Handle terminal resize (SIGWINCH)."""
@@ -636,56 +636,69 @@ class TermMon:
         }
     
     def _stats_updater_thread(self) -> None:
-        """Background thread that updates stats at regular intervals."""
+        """Background thread that updates stats at regular intervals.
+
+        Drives itself on a REFRESH_INTERVAL timer so stats stay fresh even
+        when the main loop is blocked (e.g., help popup).  The event is an
+        additional trigger for an immediate update (e.g., 'r' key).
+        """
+        last_update = time.monotonic()
         while self.running:
-            if self._stats_update_event.wait(timeout=0.1):
-                self._stats_update_event.clear()
-                # Collect into local copies so we don't hold the lock during
-                # expensive subprocess-adjacent system calls (nvidia-smi, etc.)
-                new_sysdata = {}
-                new_gpus = []
-                new_procs = []
+            # Wake on explicit signal OR after REFRESH_INTERVAL has elapsed.
+            self._stats_update_event.wait(timeout=0.1)
+            self._stats_update_event.clear()
 
-                # --- system stats (collected inline in background thread) ---
-                try:
-                    vm = psutil.virtual_memory()
-                    swap = psutil.swap_memory()
-                    per_core_raw = psutil.cpu_percent(percpu=True)
-                    per_core_usage = list(enumerate(per_core_raw))
-                    new_sysdata = {
-                        'total_mem_gb': vm.total / 1024**3,
-                        'used_mem_gb': vm.used / 1024**3,
-                        'avail_mem_gb': vm.available / 1024**3,
-                        'mem_percent': vm.percent,
-                        'swap_total_mb': swap.total / 1024**2,
-                        'swap_used_mb': swap.used / 1024**2,
-                        'swap_percent': swap.percent,
-                        'cpu_usage': sum(per_core_raw) / max(len(per_core_raw), 1),
-                        'core_count': self.core_count,
-                        'per_core_usage': per_core_usage,
-                    }
-                except KeyboardInterrupt:
-                    raise
-                except Exception as e:
-                    new_sysdata = {'error': str(e)}
+            # Throttle: don't collect more often than REFRESH_INTERVAL.
+            now = time.monotonic()
+            if now - last_update < REFRESH_INTERVAL:
+                continue
+            last_update = now
+            # Collect into local copies so we don't hold the lock during
+            # expensive subprocess-adjacent system calls (nvidia-smi, etc.)
+            new_sysdata = {}
+            new_gpus = []
+            new_procs = []
 
-                # --- GPU stats + processes (parallel) ---
-                try:
-                    self._get_gpu_data_parallel()
-                    # Snapshot the just-written values (they live in self.* now)
-                    with self._stats_lock:
-                        new_gpus = list(self.gpu_data)
-                        new_procs = list(self.gpu_processes)
-                except KeyboardInterrupt:
-                    raise
-                except Exception:
-                    pass  # leave new_gpus / new_procs as []
+            # --- system stats (collected inline in background thread) ---
+            try:
+                vm = psutil.virtual_memory()
+                swap = psutil.swap_memory()
+                per_core_raw = psutil.cpu_percent(percpu=True)
+                per_core_usage = list(enumerate(per_core_raw))
+                new_sysdata = {
+                    'total_mem_gb': vm.total / 1024**3,
+                    'used_mem_gb': vm.used / 1024**3,
+                    'avail_mem_gb': vm.available / 1024**3,
+                    'mem_percent': vm.percent,
+                    'swap_total_mb': swap.total / 1024**2,
+                    'swap_used_mb': swap.used / 1024**2,
+                    'swap_percent': swap.percent,
+                    'cpu_usage': sum(per_core_raw) / max(len(per_core_raw), 1),
+                    'core_count': self.core_count,
+                    'per_core_usage': per_core_usage,
+                }
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                new_sysdata = {'error': str(e)}
 
-                # --- Atomic swap under the lock ---
+            # --- GPU stats + processes (parallel) ---
+            try:
+                self._get_gpu_data_parallel()
+                # Snapshot the just-written values (they live in self.* now)
                 with self._stats_lock:
-                    self.system_data = new_sysdata
-                    self.gpu_data = new_gpus
-                    self.gpu_processes = new_procs
+                    new_gpus = list(self.gpu_data)
+                    new_procs = list(self.gpu_processes)
+            except KeyboardInterrupt:
+                raise
+            except Exception:
+                pass  # leave new_gpus / new_procs as []
+
+            # --- Atomic swap under the lock ---
+            with self._stats_lock:
+                self.system_data = new_sysdata
+                self.gpu_data = new_gpus
+                self.gpu_processes = new_procs
 
     def update_stats(self) -> None:
         """Signal background thread to update stats (non-blocking)."""
@@ -953,31 +966,34 @@ class TermMon:
 
         return final_lines
 
-    def _draw_memory_section(self, stdscr, y: int, x: int) -> int:
+    def _draw_memory_section(self, stdscr, y: int, x: int, snapshot: Dict[str, Any], bw: int) -> int:
         """
         Draw the system memory monitoring section (Mem and Swap in 2 columns).
-        
+
         Args:
             stdscr: Curses window
             y: Starting row position
             x: Column position
-            
+            snapshot: Thread-safe data snapshot
+            bw: Box width for this frame
+
         Returns:
             Next y position after the section
         """
+        sysdata = snapshot['system_data']
         try:
             # Box header
-            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
+            stdscr.addstr(y, x, "┌" + "─" * (bw - 2) + "┐")
             y += 1
-            stdscr.addstr(y, x, ("│ SYSTEM MEMORY").ljust(BOX_WIDTH - 1) + "│")
+            stdscr.addstr(y, x, ("│ SYSTEM MEMORY").ljust(bw - 1) + "│")
             y += 1
-            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+            stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
             y += 1
-            
+
             # Memory (left column) — 1-space side padding consistent with CPU/process sections
-            mem_pct = self.system_data.get('mem_percent', 0)
-            used_gb = self.system_data.get('used_mem_gb', 0)
-            total_gb = self.system_data.get('total_mem_gb', 0)
+            mem_pct = sysdata.get('mem_percent', 0)
+            used_gb = sysdata.get('used_mem_gb', 0)
+            total_gb = sysdata.get('total_mem_gb', 0)
 
             stdscr.addstr(y, x, "│ Mem:")
             self.draw_bar(stdscr, y, x + 7, mem_pct, BAR_WIDTH, COLOR_MEMORY)
@@ -985,9 +1001,9 @@ class TermMon:
             stdscr.addstr(y, x + 7 + BAR_WIDTH, mem_info)
 
             # Swap (right column)
-            swap_pct = self.system_data.get('swap_percent', 0)
-            swap_used_gb = self.system_data.get('swap_used_mb', 0) / 1024
-            swap_total_gb = self.system_data.get('swap_total_mb', 0) / 1024
+            swap_pct = sysdata.get('swap_percent', 0)
+            swap_used_gb = sysdata.get('swap_used_mb', 0) / 1024
+            swap_total_gb = sysdata.get('swap_total_mb', 0) / 1024
 
             right_col_start = x + 7 + BAR_WIDTH + 16  # after "│ Mem:" + bar + info
             stdscr.addstr(y, right_col_start, "Swap:")
@@ -996,45 +1012,48 @@ class TermMon:
             stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, swap_info)
 
             # Close the box
-            stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+            stdscr.addstr(y, x + bw - 1, "│")
             y += 1
-            
+
             # Box footer
-            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
+            stdscr.addstr(y, x, "└" + "─" * (bw - 2) + "┘")
             y += 2
         except curses.error:
             pass
-        
+
         return y
     
-    def _draw_cpu_section(self, stdscr, y: int, x: int, height: int) -> int:
+    def _draw_cpu_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int) -> int:
         """
         Draw the CPU monitoring section (overall + per-core in 2 columns).
-        
+
         Args:
             stdscr: Curses window
             y: Starting row position
             x: Column position
             height: Terminal height (for bounds checking)
-            
+            snapshot: Thread-safe data snapshot
+            bw: Box width for this frame
+
         Returns:
             Next y position after the section
         """
+        sysdata = snapshot['system_data']
         try:
             # Box header. Put overall CPU usage in the title to save one row on
             # short iPad/mobile SSH terminals.
-            core_count = self.system_data.get('core_count', 0)
-            cpu_pct = self.system_data.get('cpu_usage', 0)
-            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
+            core_count = sysdata.get('core_count', 0)
+            cpu_pct = sysdata.get('cpu_usage', 0)
+            stdscr.addstr(y, x, "┌" + "─" * (bw - 2) + "┐")
             y += 1
             cpu_title = f" CPU ({core_count} cores, overall {cpu_pct:5.1f}%)"
-            stdscr.addstr(y, x, ("│" + cpu_title).ljust(BOX_WIDTH - 1) + "│")
+            stdscr.addstr(y, x, ("│" + cpu_title).ljust(bw - 1) + "│")
             y += 1
-            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+            stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
             y += 1
-            
+
             # Per-core usage in TWO columns
-            per_core = self.system_data.get('per_core_usage', [])
+            per_core = sysdata.get('per_core_usage', [])
             
             # Calculate split point (half the cores in each column)
             mid_point = (core_count + 1) // 2
@@ -1043,7 +1062,7 @@ class TermMon:
             # instead of several positioned addstr/draw_bar calls; this avoids
             # stale characters and cursor-position weirdness on narrow/mobile
             # terminals where partial curses writes can visually drift.
-            content_width = BOX_WIDTH - 4  # -2 for borders, -2 for side padding
+            content_width = bw - 4  # -2 for borders, -2 for side padding
             gap_width = 2
             col_width = (content_width - gap_width) // 2
             right_width = content_width - gap_width - col_width
@@ -1090,7 +1109,7 @@ class TermMon:
                     right, right_bar_start, right_filled = core_cell(core_id, core_pct, right_width)
 
                 line = "│ " + left + " " * gap_width + right + " │"
-                stdscr.addstr(y, x, line[:BOX_WIDTH])
+                stdscr.addstr(y, x, line[:bw])
 
                 # Restore colored CPU utilization bars without returning to the
                 # old many-position write pattern. Draw the full stable row once,
@@ -1102,9 +1121,9 @@ class TermMon:
                     right_x = x + 2 + col_width + gap_width + right_bar_start
                     stdscr.addstr(y, right_x, "█" * right_filled, cpu_attr)
                 y += 1
-            
+
             # Box footer
-            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
+            stdscr.addstr(y, x, "└" + "─" * (bw - 2) + "┘")
             y += 2
         except curses.error:
             pass
@@ -1127,28 +1146,29 @@ class TermMon:
             return 'No GPU data available (powermetrics may need entitlements)'
         return 'No GPU detected or GPU monitoring unavailable'
 
-    def _draw_gpu_section(self, stdscr, y: int, x: int, height: int) -> int:
+    def _draw_gpu_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int) -> int:
         """
         Draw the GPU monitoring section (2-column layout).
 
         Handles both NVIDIA (with VRAM bar) and Apple Silicon (UMA — no
         separate VRAM, shows GPU cores instead).
         """
+        gpu_data = snapshot['gpu_data']
         try:
             # Box header
-            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
+            stdscr.addstr(y, x, "┌" + "─" * (bw - 2) + "┐")
             y += 1
-            stdscr.addstr(y, x, ("│ " + self._gpu_section_title()).ljust(BOX_WIDTH - 1) + "│")
+            stdscr.addstr(y, x, ("│ " + self._gpu_section_title()).ljust(bw - 1) + "│")
             y += 1
-            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+            stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
             y += 1
 
-            if not self.gpu_data:
+            if not gpu_data:
                 msg = "│ " + self._gpu_no_data_message()
-                stdscr.addstr(y, x, (msg + " " * (BOX_WIDTH - len(msg) - 1))[:BOX_WIDTH-1] + "│")
+                stdscr.addstr(y, x, (msg + " " * (bw - len(msg) - 1))[:bw-1] + "│")
                 y += 1
             else:
-                for gpu in self.gpu_data:
+                for gpu in gpu_data:
                     is_uma = gpu.get('is_uma', False)
                     gpu_cores = gpu.get('gpu_cores', 0)
 
@@ -1175,7 +1195,7 @@ class TermMon:
 
                     # Add temp/power on the right
                     stdscr.addstr(y, right_col_start, temp_power)
-                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                    stdscr.addstr(y, x + bw - 1, "│")
                     y += 1
 
                     # Row 2: Util (left) | VRAM or UMA info (right)
@@ -1204,16 +1224,16 @@ class TermMon:
                         stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, vram_info)
 
                     # Close the box
-                    stdscr.addstr(y, x + BOX_WIDTH - 1, "│")
+                    stdscr.addstr(y, x + bw - 1, "│")
                     y += 1
 
                     # Separator between GPUs (if more GPUs and space available)
-                    if y < height - 3 and int(gpu['idx']) < len(self.gpu_data) - 1:
-                        stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+                    if y < height - 3 and int(gpu['idx']) < len(gpu_data) - 1:
+                        stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
                         y += 1
 
             # Box footer
-            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
+            stdscr.addstr(y, x, "└" + "─" * (bw - 2) + "┘")
             y += 2
         except curses.error:
             pass
@@ -1269,103 +1289,94 @@ class TermMon:
         visible = fixed_visible + command[scroll:scroll + cmd_width]
         stdscr.addstr(y, x, "│ " + visible.ljust(view_width) + " │")
 
-    def _max_process_scroll(self) -> int:
+    def _max_process_scroll(self, bw: int, gpuprocs: List[Dict[str, Any]]) -> int:
         """Maximum horizontal scroll offset for the process table command column."""
-        view_width = max(1, BOX_WIDTH - 4)  # -2 for borders, -2 for side padding
+        view_width = max(1, bw - 4)  # -2 for borders, -2 for side padding
         cmd_width = max(1, view_width - len(self._gpu_process_fixed_header()))
-        return max(0, max((len(self._process_command(proc)) for proc in self.gpu_processes), default=0) - cmd_width)
+        return max(0, max((len(self._process_command(proc)) for proc in gpuprocs), default=0) - cmd_width)
 
-    def _draw_gpu_processes_section(self, stdscr, y: int, x: int, height: int) -> int:
+    def _draw_gpu_processes_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int) -> int:
         """
         Draw the GPU processes section as an nvtop-style horizontally scrollable table.
-        
+
         Args:
             stdscr: Curses window
             y: Starting row position
             x: Column position
             height: Terminal height (for bounds checking)
-            
+            snapshot: Thread-safe data snapshot
+            bw: Box width for this frame
+
         Returns:
             Next y position after the section
         """
+        gpuprocs = snapshot['gpu_processes']
         try:
-            self.process_scroll_x = min(max(0, self.process_scroll_x), self._max_process_scroll())
+            self.process_scroll_x = min(max(0, self.process_scroll_x), self._max_process_scroll(bw, gpuprocs))
 
             # Box header
-            stdscr.addstr(y, x, "┌" + "─" * (BOX_WIDTH - 2) + "┐")
+            stdscr.addstr(y, x, "┌" + "─" * (bw - 2) + "┐")
             y += 1
 
             title = f" GPU PROCESSES  ←/→ scroll {self.process_scroll_x}"
-            stdscr.addstr(y, x, ("│" + title).ljust(BOX_WIDTH - 1)[:BOX_WIDTH-1] + "│")
+            stdscr.addstr(y, x, ("│" + title).ljust(bw - 1)[:bw-1] + "│")
             y += 1
 
-            stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+            stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
             y += 1
 
             hdr = self._gpu_process_table_header()
-            stdscr.addstr(y, x, ("│ " + hdr).ljust(BOX_WIDTH - 1)[:BOX_WIDTH-1] + "│")
+            stdscr.addstr(y, x, ("│ " + hdr).ljust(bw - 1)[:bw-1] + "│")
             y += 1
 
             if y < height - 3:
-                stdscr.addstr(y, x, "│" + "─" * (BOX_WIDTH - 2) + "│")
+                stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
                 y += 1
-            
-            if not self.gpu_processes:
+
+            if not gpuprocs:
                 if y < height - 3:
-                    self._draw_scrolled_process_line(stdscr, y, x, "", "No active GPU compute processes", BOX_WIDTH)
+                    self._draw_scrolled_process_line(stdscr, y, x, "", "No active GPU compute processes", bw)
                     y += 1
             else:
-                for proc in self.gpu_processes:
+                for proc in gpuprocs:
                     if y >= height - 3:
                         break  # Don't draw off-screen
-                    self._draw_scrolled_process_line(stdscr, y, x, self._gpu_process_fixed_prefix(proc), self._process_command(proc), BOX_WIDTH)
+                    self._draw_scrolled_process_line(stdscr, y, x, self._gpu_process_fixed_prefix(proc), self._process_command(proc), bw)
                     y += 1
-            
+
             # Box footer
-            stdscr.addstr(y, x, "└" + "─" * (BOX_WIDTH - 2) + "┘")
+            stdscr.addstr(y, x, "└" + "─" * (bw - 2) + "┘")
             y += 2
         except curses.error:
             pass
-        
+
         return y
     
     def draw(self, stdscr) -> None:
         """Draw the complete UI with all monitoring sections."""
         # Take a thread-safe snapshot of the latest stats
         with self._stats_lock:
-            sysdata = dict(self.system_data)
-            gpudata = list(self.gpu_data)
-            gpuprocs = list(self.gpu_processes)
-        # Temporarily swap in the snapshot so _draw_* helpers read it,
-        # then restore originals in a finally block.
-        _saved_sys = self.system_data
-        _saved_gpu = self.gpu_data
-        _saved_procs = self.gpu_processes
-        self.system_data = sysdata
-        self.gpu_data = gpudata
-        self.gpu_processes = gpuprocs
-        try:
-            self._draw_frame(stdscr)
-        finally:
-            self.system_data = _saved_sys
-            self.gpu_data = _saved_gpu
-            self.gpu_processes = _saved_procs
+            snapshot = {
+                'system_data': dict(self.system_data),
+                'gpu_data': list(self.gpu_data),
+                'gpu_processes': list(self.gpu_processes),
+            }
+        self._draw_frame(stdscr, snapshot)
 
-    def _draw_frame(self, stdscr) -> None:
-        """Draw a single frame — called from draw() with data held stable."""
+    def _draw_frame(self, stdscr, snapshot: Dict[str, Any]) -> None:
+        """Draw a single frame — called from draw() with a thread-safe snapshot."""
         try:
             curses.curs_set(0)
         except curses.error:
             pass
-        
+
         height, width = stdscr.getmaxyx()
-        
-        # Calculate box width dynamically (80% of terminal width, min 80, max 120)
-        global BOX_WIDTH
-        BOX_WIDTH = max(80, min(120, int(width * 0.85)))
-        
+
+        # Calculate box width dynamically (85% of terminal width, min 80, max 120)
+        self._box_width = max(80, min(120, int(width * 0.85)))
+
         stdscr.erase()
-        
+
         # Title
         title = f" termmon {__version__} - System Monitor | {datetime.now().strftime('%H:%M:%S')} | q:quit r:refresh h:help "
         try:
@@ -1374,24 +1385,24 @@ class TermMon:
             stdscr.attroff(curses.A_REVERSE)
         except curses.error:
             pass
-        
+
         y = 2
-        x = (width - BOX_WIDTH) // 2
+        x = (width - self._box_width) // 2
         if x < 1:
             x = 1
-        
+
         # Draw system memory section
-        y = self._draw_memory_section(stdscr, y, x)
-        
+        y = self._draw_memory_section(stdscr, y, x, snapshot, self._box_width)
+
         # Draw CPU section
-        y = self._draw_cpu_section(stdscr, y, x, height)
-        
+        y = self._draw_cpu_section(stdscr, y, x, height, snapshot, self._box_width)
+
         # Draw GPU section
-        y = self._draw_gpu_section(stdscr, y, x, height)
-        
+        y = self._draw_gpu_section(stdscr, y, x, height, snapshot, self._box_width)
+
         # Draw GPU processes section
-        y = self._draw_gpu_processes_section(stdscr, y, x, height)
-        
+        y = self._draw_gpu_processes_section(stdscr, y, x, height, snapshot, self._box_width)
+
         # Footer
         try:
             footer = f" Refresh: {REFRESH_INTERVAL}s | q:quit r:refresh h:help ←/→:process scroll "
@@ -1400,7 +1411,7 @@ class TermMon:
             stdscr.attroff(curses.A_REVERSE)
         except curses.error:
             pass
-        
+
         stdscr.refresh()
     
     def run(self) -> None:
@@ -1479,7 +1490,10 @@ class TermMon:
                 elif key == ord('h') or key == ord('H'):
                     self._show_help(stdscr)
                 elif key == curses.KEY_RIGHT:
-                    self.process_scroll_x = min(self._max_process_scroll(), self.process_scroll_x + 16)
+                    with self._stats_lock:
+                        _gp = list(self.gpu_processes)
+                    mx = self._max_process_scroll(self._box_width, _gp)
+                    self.process_scroll_x = min(mx, self.process_scroll_x + 16)
                     self.draw(stdscr)
                 elif key == curses.KEY_LEFT:
                     self.process_scroll_x = max(0, self.process_scroll_x - 16)

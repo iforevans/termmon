@@ -62,7 +62,7 @@ Simply run `termmon` and watch your system resources in real-time.
 ## Display Layout
 
 ```
- termmon 1.10.1 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+ termmon 1.11.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
 ┌────────────────────────────────────────────────────────────────┐
 │ SYSTEM MEMORY                                                  │
 │────────────────────────────────────────────────────────────────│
@@ -131,6 +131,18 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
+
+### v1.11.0 (2026-07-20)
+- **Thread safety: eliminated race condition in draw()**
+  - `draw()` now takes a thread-safe snapshot under `_stats_lock` and passes it through `_draw_frame` → all `_draw_*` methods as a `snapshot` dict
+  - No instance attribute mutation during draw — the background thread and draw never touch the same objects concurrently
+- **Thread safety: eliminated global mutable `BOX_WIDTH`**
+  - `BOX_WIDTH` replaced with `self._box_width`, computed once per frame in `_draw_frame` and passed as `bw` to all draw methods
+  - No more `global BOX_WIDTH` — all draw methods are now pure readers of their arguments
+- **Background thread auto-refresh**
+  - `_stats_updater_thread` now drives itself on a `REFRESH_INTERVAL` timer via `time.monotonic()`
+  - Stats stay fresh even when the main loop is blocked (e.g., help popup `getch()`)
+  - The event still provides an immediate-trigger path (e.g., `r` key, terminal resize)
 
 ### v1.10.1 (2026-07-10)
 - **README display layout mockup updated**: ASCII mockup now accurately reflects v1.10.0 UI
