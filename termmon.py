@@ -52,7 +52,7 @@ import threading
 from datetime import datetime
 import logging
 import time
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.14.0"
+__version__ = "1.15.0"
 __author__ = "Ifor Evans"
 
 
@@ -354,39 +354,22 @@ class TermMon:
           3. powermetrics — Apple's built-in tool (requires sudo on macOS 13+)
           4. Returns (0, 0) if none succeed
 
-        macmon pipe JSON example:
-          {
-            "gpu_usage": [1200, 0.75],  // [freq_mhz, percent_from_max]
-            "gpu_power": 5.2,            // Watts
-            "temp": { "gpu_temp_avg": 45.5 }
-          }
-
-        socpwrbud output example:
-          Integrated Graphics
-              Average frequency: 609 mhz
-              Average voltage:   692 mv
-              Active residency:  2.46 %
-              Idle residency:    97.54 %
-
-        powermetrics output example:
-          GPU active percentage: 12.3%
-          GPU power:            5.2 Watts
+        Each tier returns Optional[Tuple[float, float]] — None means the tool
+        is unavailable, (0.0, 0.0) means it ran but the GPU was genuinely idle.
+        This distinguishes "tool missing" from "GPU at 0% utilization".
         """
-        # --- Tier 1: macmon (preferred — actively maintained, no sudo) ---
-        result = TermMon._apple_gpu_util_macmon()
-        if result != (0.0, 0.0):
-            return result
-
-        # --- Tier 2: socpwrbud (fallback — archived but works on many chips) ---
-        result = TermMon._apple_gpu_util_socpwrbud()
-        if result != (0.0, 0.0):
-            return result
-
-        # --- Tier 3: powermetrics (last resort — requires sudo on macOS 13+) ---
-        return TermMon._apple_gpu_util_powermetrics()
+        for tier_fn in (
+            TermMon._apple_gpu_util_macmon,
+            TermMon._apple_gpu_util_socpwrbud,
+            TermMon._apple_gpu_util_powermetrics,
+        ):
+            result = tier_fn()
+            if result is not None:
+                return result
+        return 0.0, 0.0
 
     @staticmethod
-    def _apple_gpu_util_macmon() -> Tuple[float, float]:
+    def _apple_gpu_util_macmon() -> Optional[Tuple[float, float]]:
         """
         Get GPU utilization from macmon (sudoless IOReport + SMC reader).
 
@@ -395,7 +378,8 @@ class TermMon:
           - Homebrew:  brew install vladkens/tap/macmon
           - Release:   https://github.com/vladkens/macmon/releases
 
-        Returns (gpu_util_pct, gpu_power_watts) as floats.
+        Returns None if macmon is unavailable, (gpu_util_pct, gpu_power_watts)
+        if it ran (even if both values are 0.0 for a truly idle GPU).
         """
         try:
             # macmon pipe -s 1 gives one JSON line then exits
@@ -420,10 +404,10 @@ class TermMon:
         except (FileNotFoundError, subprocess.TimeoutExpired, ValueError,
                 json.JSONDecodeError, TypeError):
             pass
-        return 0.0, 0.0
+        return None
 
     @staticmethod
-    def _apple_gpu_util_socpwrbud() -> Tuple[float, float]:
+    def _apple_gpu_util_socpwrbud() -> Optional[Tuple[float, float]]:
         """
         Get GPU utilization from socpwrbud (sudoless IOReport reader).
 
@@ -431,7 +415,9 @@ class TermMon:
         directly from IOReport without requiring sudo. Archived but still
         functional on many Apple Silicon chips.
 
-        Returns (gpu_util, gpu_power) as floats.
+        Returns None if socpwrbud is unavailable, (gpu_util, 0.0) if it ran.
+        Note: socpwrbud does not report power draw, so power is always 0.0
+        when this tier succeeds.
         """
         try:
             result = subprocess.run(
@@ -448,21 +434,24 @@ class TermMon:
                             gpu_util = float(val)
                         except (ValueError, IndexError):
                             pass
-                if gpu_util > 0:
-                    return gpu_util, 0.0
+                return gpu_util, 0.0
         except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
             pass
-        return 0.0, 0.0
+        return None
 
     @staticmethod
-    def _apple_gpu_util_powermetrics() -> Tuple[float, float]:
+    def _apple_gpu_util_powermetrics() -> Optional[Tuple[float, float]]:
         """
         Get GPU utilization from powermetrics (Apple's built-in tool).
 
         Note: On macOS 13+ (Ventura and later), powermetrics requires sudo
         to access GPU power sampler data. Without sudo, it returns zeros.
+        However, the tool itself runs successfully (returncode 0) — it
+        just doesn't have permission to read the counters, so we return
+        (0.0, 0.0) to indicate "ran but no data" rather than None.
 
-        Returns (gpu_util, gpu_power) as floats.
+        Returns None if powermetrics binary is unavailable,
+        (gpu_util, gpu_power) if it ran.
         """
         try:
             result = subprocess.run(
@@ -478,16 +467,22 @@ class TermMon:
                         parts = line.split(':')
                         if len(parts) >= 2:
                             val = parts[-1].strip().rstrip('%')
-                            gpu_util = float(val)
+                            try:
+                                gpu_util = float(val)
+                            except ValueError:
+                                pass
                     elif line.startswith('GPU power:'):
                         parts = line.split(':')
                         if len(parts) >= 2:
                             val = parts[-1].strip().split()[0]
-                            gpu_power = float(val)
+                            try:
+                                gpu_power = float(val)
+                            except (ValueError, IndexError):
+                                pass
                 return gpu_util, gpu_power
         except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
             pass
-        return 0.0, 0.0
+        return None
 
     # ---- GPU processes ------------------------------------------------
 

@@ -62,7 +62,7 @@ Simply run `termmon` and watch your system resources in real-time.
 ## Display Layout
 
 ```
-  termmon 1.14.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+  termmon 1.15.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
 ┌────────────────────────────────────────────────────────────────┐
 │ SYSTEM MEMORY                                                  │
 │────────────────────────────────────────────────────────────────│
@@ -131,6 +131,9 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
+
+### v1.15.0 (2026-07-24)
+- **Fix GPU util sentinel**: `_apple_gpu_util_*` tiers now return `Optional[Tuple]` — `None` means "tool unavailable", `(0.0, 0.0)` means "ran but GPU was genuinely idle". Old code used `!= (0.0, 0.0)` which skipped real idle readings. Added `try/except ValueError` around float parsing in powermetrics tier for malformed output.
 
 ### v1.14.0 (2026-07-24)
 - **macOS GPU metadata consolidation**: Merged `_apple_gpu_model()` and `_apple_gpu_cores()` (which each ran `system_profiler`) into a single cached `_apple_gpu_metadata` property with `_detect_apple_gpu_metadata()` helper. Reduces subprocess calls from 2 to 0 on repeated refreshes (cached after first call).
