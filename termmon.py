@@ -67,7 +67,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.12.0"
+__version__ = "1.13.0"
 __author__ = "Ifor Evans"
 
 
@@ -108,6 +108,9 @@ class TermMon:
         self._stats_thread = None
         self._stats_update_event = threading.Event()  # Signal for background thread
         self._box_width: int = 80  # Computed per-frame in _draw_frame
+        self._gpu_data_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix='termmon-gpu'
+        )
     
     def _on_resize(self, signum: int, frame: Any) -> None:
         """Handle terminal resize (SIGWINCH)."""
@@ -312,15 +315,21 @@ class TermMon:
 
     @staticmethod
     def _apple_gpu_cores() -> int:
-        """Get GPU core count from sysctl."""
+        """Get GPU core count from system_profiler JSON (sppci_cores)."""
         try:
             result = subprocess.run(
-                ['sysctl', '-n', 'hw.gpus'],
-                capture_output=True, text=True, timeout=3
+                ['system_profiler', 'SPDisplaysDataType', '-json'],
+                capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
-                return int(result.stdout.strip())
-        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+                data = json.loads(result.stdout)
+                gpus = data.get('SPDisplaysDataType', [])
+                if gpus:
+                    # sppci_cores is the GPU core count on Apple Silicon
+                    cores_str = gpus[0].get('sppci_cores')
+                    if cores_str:
+                        return int(cores_str)
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, json.JSONDecodeError):
             pass
         return 0
 
@@ -493,6 +502,20 @@ class TermMon:
         except Exception:
             self.gpu_processes = []
 
+    @staticmethod
+    def _seed_cpu_percent(pids: List[int]) -> None:
+        """Seed cpu_percent for a set of PIDs so the next read returns real values.
+
+        psutil.Process.cpu_percent(interval=None) returns 0.0 on the first call
+        because it needs a baseline. We seed all candidate PIDs here so that
+        the enrichment pass below gets meaningful CPU percentages.
+        """
+        for pid in pids:
+            try:
+                psutil.Process(pid).cpu_percent(interval=None)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
     def _get_gpu_processes_nvidia(self) -> None:
         """Get NVIDIA GPU compute apps via nvidia-smi, enriched with psutil."""
         result = subprocess.run(
@@ -506,6 +529,21 @@ class TermMon:
 
         if result.returncode == 0:
             processes = []
+            pids: List[int] = []
+            for line in result.stdout.strip().split('\n'):
+                if not line.strip():
+                    continue
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 3:
+                    try:
+                        pid = int(parts[0].strip())
+                        pids.append(pid)
+                    except (ValueError, IndexError):
+                        pass
+
+            # Seed cpu_percent so enrichment reads are accurate
+            self._seed_cpu_percent(pids)
+
             for line in result.stdout.strip().split('\n'):
                 if not line.strip():
                     continue
@@ -563,6 +601,9 @@ class TermMon:
             # Sort by host memory as proxy for GPU activity, take top-N
             candidates.sort(key=lambda x: x['host_mem'], reverse=True)
             top_n = candidates[:MAX_GPU_PROCS]
+
+            # Seed cpu_percent for the top-N PIDs so enrichment reads are accurate
+            self._seed_cpu_percent([c['pid'] for c in top_n])
 
             # --- Pass 2: enrich top-N with user + cmdline ---
             for c in top_n:
@@ -729,19 +770,18 @@ class TermMon:
     def _get_gpu_data_parallel(self) -> None:
         """Run get_gpu_stats() and get_gpu_processes() concurrently."""
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                futures = {
-                    pool.submit(self.get_gpu_stats): 'stats',
-                    pool.submit(self.get_gpu_processes): 'processes',
-                }
-                for future in concurrent.futures.as_completed(futures):
-                    try:
-                        future.result()
-                    except KeyboardInterrupt:
-                        raise
-                    except Exception:
-                        # Errors handled inside each method
-                        pass
+            futures = {
+                self._gpu_data_executor.submit(self.get_gpu_stats): 'stats',
+                self._gpu_data_executor.submit(self.get_gpu_processes): 'processes',
+            }
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except KeyboardInterrupt:
+                    raise
+                except Exception:
+                    # Errors handled inside each method
+                    pass
         except KeyboardInterrupt:
             raise
     
@@ -1368,7 +1408,7 @@ class TermMon:
                             pass
                     self._stats_update_event.set()
                     last_refresh = current_time  # Force refresh on resize
-
+                
                 # Trigger stats update every 2 seconds
                 if current_time - last_refresh >= 2:
                     self._stats_update_event.set()
@@ -1394,15 +1434,22 @@ class TermMon:
                 elif key == curses.KEY_LEFT:
                     self.process_scroll_x = max(0, self.process_scroll_x - 16)
                     self.draw(stdscr)
+        except KeyboardInterrupt:
+            self.running = False
         finally:
             # Stop the background stats thread cleanly
             self.running = False
             if self._stats_thread is not None:
                 self._stats_thread.join(timeout=2)
+            try:
+                curses.curs_set(1)
+            except curses.error:
+                pass
             curses.nocbreak()
             stdscr.keypad(False)
             curses.echo()
             curses.endwin()
+            self._gpu_data_executor.shutdown(wait=False)
 
 
 if __name__ == "__main__":

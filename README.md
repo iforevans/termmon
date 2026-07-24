@@ -62,7 +62,7 @@ Simply run `termmon` and watch your system resources in real-time.
 ## Display Layout
 
 ```
-  termmon 1.12.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+  termmon 1.13.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
 ┌────────────────────────────────────────────────────────────────┐
 │ SYSTEM MEMORY                                                  │
 │────────────────────────────────────────────────────────────────│
@@ -123,7 +123,7 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Built with**: Python + curses + psutil
 - **Dependencies**: `psutil` (cross-platform system stats)
 - **Platform detection**: Auto-detects Linux (NVIDIA) or macOS (Apple Silicon)
-- **GPU Detection**: `nvidia-smi` on Linux; `macmon` (preferred), `socpwrbud`, or `powermetrics` + `sysctl` on macOS
+- **GPU Detection**: `nvidia-smi` on Linux; `macmon` (preferred), `socpwrbud`, or `powermetrics` + `system_profiler` on macOS
 - **macOS GPU**: Three-tier fallback — `macmon` (actively maintained, no sudo), `socpwrbud` (archived, no sudo), `powermetrics` (requires sudo on macOS 13+)
 - **CPU Stats**: psutil (cross-platform, replaces `/proc/stat`)
 - **Memory Stats**: psutil (cross-platform, replaces `/proc/meminfo`)
@@ -131,6 +131,12 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
+
+### v1.13.0 (2026-07-24)
+- **macOS GPU core count fix**: `_apple_gpu_cores()` now parses `system_profiler SPDisplaysDataType -json` (`sppci_cores`) instead of the non-existent `hw.gpus` sysctl. GPU core count was always 0 on Apple Silicon.
+- **CPU percent enrichment fix**: `psutil.Process.cpu_percent(interval=None)` returns 0.0 on first call per Process object. Added `_seed_cpu_percent(pids)` that seeds all candidate PIDs before the enrichment pass, so CPU % columns show real values instead of 0.0% on every refresh.
+- **Clean Ctrl+C exit**: Added explicit `except KeyboardInterrupt` in `run()` and `curses.curs_set(1)` in cleanup to restore cursor visibility.
+- **Persistent thread pool**: Replaced per-refresh `ThreadPoolExecutor` creation with a persistent `self._gpu_data_executor` created in `__init__` and shut down on exit. Eliminates thread pool creation/destruction overhead every 2-second refresh cycle.
 
 ### v1.12.0 (2026-07-20)
 - **cpu_percent seeding**: All processes are seeded on startup so the first `cpu_percent(interval=None)` read returns real values instead of 0
