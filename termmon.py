@@ -67,7 +67,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.13.0"
+__version__ = "1.14.0"
 __author__ = "Ifor Evans"
 
 
@@ -94,6 +94,13 @@ MAX_GPU_PROCS = 5
 
 class TermMon:
     """Terminal-based system monitor combining htop and nvidia-smi."""
+    
+    # Cached GPU process table fixed header (nvtop-style columns before Command)
+    _GPU_PROCESS_FIXED_HEADER: str = (
+        f"{'PID':<7} {'USER':<8} {'DEV':<3} {'TYPE':<4} "
+        f"{'GPU':>5} {'GPU MEM':>8} {'CPU':>6} {'HOST MEM':>8} "
+    )
+    _GPU_PROCESS_FIXED_HEADER_LEN: int = len(_GPU_PROCESS_FIXED_HEADER)
     
     def __init__(self) -> None:
         """Initialize the TermMon application."""
@@ -253,9 +260,8 @@ class TermMon:
         """
         gpus = []
 
-        # --- GPU model name and core count (one-shot cache) ---
-        gpu_name = self._apple_gpu_model()
-        gpu_cores = self._apple_gpu_cores()
+        # --- GPU model name and core count (cached one-shot) ---
+        gpu_name, gpu_cores = self._apple_gpu_metadata
 
         # --- GPU utilization + power via single powermetrics call ---
         gpu_util, gpu_power = self._apple_gpu_util_and_power()
@@ -279,10 +285,26 @@ class TermMon:
 
         self.gpu_data = gpus
 
+    @property
+    def _apple_gpu_metadata(self) -> Tuple[str, int]:
+        """Get GPU model name and core count, cached (hardware doesn't change at runtime).
+
+        Returns (model_name, core_count) by parsing system_profiler JSON once
+        and caching the result. Replaces the separate _apple_gpu_model() and
+        _apple_gpu_cores() static methods which each ran system_profiler.
+        """
+        if not hasattr(self, '_cached_apple_gpu_metadata'):
+            self._cached_apple_gpu_metadata = self._detect_apple_gpu_metadata()
+        return self._cached_apple_gpu_metadata
+
     @staticmethod
-    def _apple_gpu_model() -> str:
-        """Get GPU model name from sysctl or system_profiler."""
-        # Try sysctl first (fast)
+    def _detect_apple_gpu_metadata() -> Tuple[str, int]:
+        """Query system_profiler for GPU model name and core count."""
+        # Try sysctl for model name first (fast), then system_profiler for cores
+        gpu_name = 'Apple GPU'
+        gpu_cores = 0
+
+        # Try sysctl -n hw.gpu.model for model name (fast, Apple Silicon)
         for key in ('hw.gpu.model', 'hw.model'):
             try:
                 result = subprocess.run(
@@ -292,30 +314,12 @@ class TermMon:
                 if result.returncode == 0:
                     model = result.stdout.strip()
                     if key == 'hw.gpu.model' and model:
-                        return model
+                        gpu_name = model
+                        break
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
-        # Fallback: parse system_profiler
-        try:
-            result = subprocess.run(
-                ['system_profiler', 'SPDisplaysDataType', '-json'],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                data = json.loads(result.stdout)
-                if data.get('SPDisplaysDataType'):
-                    # First GPU entry
-                    gpu = data['SPDisplaysDataType'][0]
-                    return gpu.get('spdisplays_chipset', 'Apple GPU')
-        except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
-            pass
-
-        return 'Apple GPU'
-
-    @staticmethod
-    def _apple_gpu_cores() -> int:
-        """Get GPU core count from system_profiler JSON (sppci_cores)."""
+        # Get model name + core count from system_profiler (single call)
         try:
             result = subprocess.run(
                 ['system_profiler', 'SPDisplaysDataType', '-json'],
@@ -325,13 +329,19 @@ class TermMon:
                 data = json.loads(result.stdout)
                 gpus = data.get('SPDisplaysDataType', [])
                 if gpus:
+                    gpu = gpus[0]
+                    # Use system_profiler for model name if sysctl didn't find it
+                    if gpu_name == 'Apple GPU':
+                        gpu_name = gpu.get('spdisplays_chipset', 'Apple GPU') or 'Apple GPU'
                     # sppci_cores is the GPU core count on Apple Silicon
-                    cores_str = gpus[0].get('sppci_cores')
+                    cores_str = gpu.get('sppci_cores')
                     if cores_str:
-                        return int(cores_str)
-        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, json.JSONDecodeError):
+                        gpu_cores = int(cores_str)
+        except (FileNotFoundError, subprocess.TimeoutExpired,
+                json.JSONDecodeError, ValueError):
             pass
-        return 0
+
+        return gpu_name, gpu_cores
 
     @staticmethod
     def _apple_gpu_util_and_power() -> Tuple[float, float]:
@@ -1174,16 +1184,9 @@ class TermMon:
                 return base_name + (' ' + ' '.join(parts[1:]) if len(parts) > 1 else '')
         return os.path.basename(proc.get('process_name', 'unknown').split(',')[0].strip())
 
-    def _gpu_process_fixed_header(self) -> str:
-        """Fixed nvtop-style GPU process table columns before Command."""
-        return (
-            f"{'PID':<7} {'USER':<8} {'DEV':<3} {'TYPE':<4} "
-            f"{'GPU':>5} {'GPU MEM':>8} {'CPU':>6} {'HOST MEM':>8} "
-        )
-
     def _gpu_process_table_header(self) -> str:
         """nvtop-style GPU process table header."""
-        return self._gpu_process_fixed_header() + "Command"
+        return self._GPU_PROCESS_FIXED_HEADER + "Command"
 
     def _gpu_process_fixed_prefix(self, proc: Dict[str, Any]) -> str:
         """Format fixed nvtop-style GPU process columns before Command."""
@@ -1201,10 +1204,6 @@ class TermMon:
             f"{gpu_text:>5} {gpu_mem:>8} {cpu_text:>6} {host_mem:>8} "
         )
 
-    def _gpu_process_table_row(self, proc: Dict[str, Any]) -> str:
-        """Format one nvtop-style GPU process row without horizontal clipping."""
-        return self._gpu_process_fixed_prefix(proc) + self._process_command(proc)
-
     def _draw_scrolled_process_line(self, stdscr, y: int, x: int, fixed: str, command: str, width: int) -> None:
         """Draw one bordered process table line with fixed columns and scrolled command."""
         view_width = max(1, width - 4)  # -2 for borders, -2 for side padding
@@ -1217,7 +1216,7 @@ class TermMon:
     def _max_process_scroll(self, bw: int, gpuprocs: List[Dict[str, Any]]) -> int:
         """Maximum horizontal scroll offset for the process table command column."""
         view_width = max(1, bw - 4)  # -2 for borders, -2 for side padding
-        cmd_width = max(1, view_width - len(self._gpu_process_fixed_header()))
+        cmd_width = max(1, view_width - self._GPU_PROCESS_FIXED_HEADER_LEN)
         return max(0, max((len(self._process_command(proc)) for proc in gpuprocs), default=0) - cmd_width)
 
     def _draw_gpu_processes_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int) -> int:

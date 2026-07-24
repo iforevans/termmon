@@ -62,7 +62,7 @@ Simply run `termmon` and watch your system resources in real-time.
 ## Display Layout
 
 ```
-  termmon 1.13.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+  termmon 1.14.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
 ┌────────────────────────────────────────────────────────────────┐
 │ SYSTEM MEMORY                                                  │
 │────────────────────────────────────────────────────────────────│
@@ -131,6 +131,11 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Refresh Rate**: 2 seconds (configurable in source)
 
 ## Development Timeline
+
+### v1.14.0 (2026-07-24)
+- **macOS GPU metadata consolidation**: Merged `_apple_gpu_model()` and `_apple_gpu_cores()` (which each ran `system_profiler`) into a single cached `_apple_gpu_metadata` property with `_detect_apple_gpu_metadata()` helper. Reduces subprocess calls from 2 to 0 on repeated refreshes (cached after first call).
+- **Process table header caching**: Replaced per-draw `_gpu_process_fixed_header()` method with static class constant `_GPU_PROCESS_FIXED_HEADER` and `_GPU_PROCESS_FIXED_HEADER_LEN`. Eliminates string construction + f-string parsing on every render frame.
+- **Dead code removal**: Removed `_gpu_process_table_row()` method (unreachable — the scrolling draw path uses `_draw_scrolled_process_line` instead).
 
 ### v1.13.0 (2026-07-24)
 - **macOS GPU core count fix**: `_apple_gpu_cores()` now parses `system_profiler SPDisplaysDataType -json` (`sppci_cores`) instead of the non-existent `hw.gpus` sysctl. GPU core count was always 0 on Apple Silicon.
