@@ -13,6 +13,7 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
   - Shows PID, user, GPU memory, host memory, and command
   - Sorted by VRAM usage (descending)
 - **Color-coded progress bars**: Visual feedback for resource usage
+- **Fully responsive layout**: Reflows to any terminal size (nvtop-style) — resize freely, content never wraps or overwrites itself. Degrades gracefully from ultra-wide down to ~28 columns
 - **Auto-refresh**: Updates every 2 seconds
 - **Cross-platform**: Linux (NVIDIA GPUs) and macOS (Apple Silicon GPUs)
 - **Pure Python**: Minimal external dependencies
@@ -61,37 +62,77 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Display Layout
 
+The layout is **fully responsive** — it reflows to whatever size your terminal is, nvtop-style. Both mockups below are real rendered output.
+
+At 80 columns, Mem/Swap sit side by side, cores run in two columns, and GPU Util/VRAM share a row:
+
 ```
-  termmon 1.15.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
-┌────────────────────────────────────────────────────────────────┐
-│ SYSTEM MEMORY                                                  │
-│────────────────────────────────────────────────────────────────│
-│ Mem:  [██████████████████░░░░] 12.5/15.4GB 81.2%               │
-│ Swap: [████░░░░░░░░░░░░░░░░]   2.7/4.3GB 62.5%                 │
-└────────────────────────────────────────────────────────────────┘
-┌────────────────────────────────────────────────────────────────┐
-│ CPU (8 cores, overall  23.4%)                                  │
-│────────────────────────────────────────────────────────────────│
-│ Core 0: [█████░░░░░░░░░░] 23.4% Core 4: [██░░░░░░░░░░░]  9.8%  │
-│ Core 1: [███████░░░░░░░░] 31.0% Core 5: [███░░░░░░░░░░] 15.2%  │
-│ Core 2: [███░░░░░░░░░░░░] 12.8% Core 6: [█░░░░░░░░░░░░]  4.3%  │
-│ Core 3: [█████░░░░░░░░░░] 24.5% Core 7: [░░░░░░░░░░░░░]  0.0%  │
-└────────────────────────────────────────────────────────────────┘
-┌────────────────────────────────────────────────────────────────┐
-│ NVIDIA GPU(s)                                                  │
-│────────────────────────────────────────────────────────────────│
-│ GPU 0: NVIDIA RTX A6000               Temp:  59C  Power: 110W  │
-│ Util: [████████░░░░░░░░░░░░░░] 80.0%  VRAM: 42.8GB/48.0G 89.2% │
-└────────────────────────────────────────────────────────────────┘
-┌────────────────────────────────────────────────────────────────┐
-│ GPU PROCESSES  <-/-> scroll 0                                  │
-│────────────────────────────────────────────────────────────────│
-│ PID     USER     DEV TYPE  GPU  GPU MEM   CPU HOST MEM Command │
-│────────────────────────────────────────────────────────────────│
-│ 54321   iforevan  0   C   45%   39506M 12%    7768M llama-serv │
-└────────────────────────────────────────────────────────────────┘
- Refresh: 2s | q:quit r:refresh h:help <-/>:process scroll
+ termmon 1.16.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+ ┌────────────────────────────────────────────────────────────────────────────┐
+ │ SYSTEM MEMORY                                                              │
+ │────────────────────────────────────────────────────────────────────────────│
+ │ Mem: ████████░░  12.5GB/15.4G  81.2%  Swap:██████░░░░  2.7/ 4.3GB  62.5%   │
+ └────────────────────────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────────┐
+ │ CPU (8 cores, overall  15.1%)                                              │
+ │────────────────────────────────────────────────────────────────────────────│
+ │ Core 0: ████░░░░░░░░░░░░░░░░░  23.4%  Core 4: ██░░░░░░░░░░░░░░░░░░░   9.8% │
+ │ Core 1: ██████░░░░░░░░░░░░░░░  31.0%  Core 5: ███░░░░░░░░░░░░░░░░░░  15.2% │
+ │ Core 2: ██░░░░░░░░░░░░░░░░░░░  12.8%  Core 6: █░░░░░░░░░░░░░░░░░░░░   4.3% │
+ │ Core 3: █████░░░░░░░░░░░░░░░░  24.5%  Core 7: ░░░░░░░░░░░░░░░░░░░░░   0.0% │
+ └────────────────────────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────────┐
+ │ NVIDIA GPU(s)                                                              │
+ │────────────────────────────────────────────────────────────────────────────│
+ │ GPU 0: NVIDIA RTX A6000                      Temp:    59°C  Power:  110.0W │
+ │ Util:████████████████░░░░   80.0%                                          │
+ │ VRAM:█████████████████░░░  42.8GB/48.0G  89.1%                             │
+ └────────────────────────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────────┐
+ │ GPU PROCESSES  ←/→ scroll 0                                                │
+ │────────────────────────────────────────────────────────────────────────────│
+ │ PID     USER     DEV TYPE   GPU  GPU MEM    CPU HOST MEM Command           │
+ │────────────────────────────────────────────────────────────────────────────│
+ │ 54321   iforevan 0   C       --   39506M  12.0%    7768M llama-server --hos│
+ └────────────────────────────────────────────────────────────────────────────┘
+ Refresh: 2s | q:quit r:refresh h:help ←/→:process scroll
 ```
+
+Shrink to 50 columns and the box narrows with the terminal, bars shorten, Mem/Swap stack, GPU name splits from temp/power, and Util/VRAM take their own rows — no wrapping, no overwritten content:
+
+```
+ termmon 1.16.0 | 14:32:07
+ ┌──────────────────────────────────────────────┐
+ │ SYSTEM MEMORY                                │
+ │──────────────────────────────────────────────│
+ │ Mem: █████████████░░░░  12.5GB/15.4G  81.2%  │
+ │ Swap:██████████░░░░░░░  2.7/ 4.3GB  62.5%    │
+ └──────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────┐
+ │ CPU (8 cores, overall  15.1%)                │
+ │──────────────────────────────────────────────│
+ │ Core 0: █░░░░░  23.4%  Core 4: █░░░░░   9.8% │
+ │ Core 1: █░░░░░  31.0%  Core 5: █░░░░░  15.2% │
+ │ Core 2: █░░░░░  12.8%  Core 6: █░░░░░   4.3% │
+ │ Core 3: █░░░░░  24.5%  Core 7: ░░░░░░   0.0% │
+ └──────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────┐
+ │ NVIDIA GPU(s)                                │
+ │──────────────────────────────────────────────│
+ │ GPU 0: NVIDIA RTX A6000                      │
+ │ Temp:    59°C  Power:  110.0W                │
+ │ Util:████████████████░░░░   80.0%            │
+ │ VRAM:███████████████░░  42.8GB/48.0G  89.1%  │
+ └──────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────┐
+ │ GPU PROCESSES  ←/→ scroll 0                  │
+ │──────────────────────────────────────────────│
+ │ PID     USER     DEV TYPE   GPU  GPU MEM    C│
+ └──────────────────────────────────────────────┘
+ q:quit r:refresh h:help ←/→:scroll
+```
+
+Below ~24 columns termmon shows a "Terminal too small" notice rather than rendering a mangled dashboard.
 
 ## Color Scheme
 
@@ -129,6 +170,26 @@ Simply run `termmon` and watch your system resources in real-time.
 - **Memory Stats**: psutil (cross-platform, replaces `/proc/meminfo`)
 - **Process Info**: psutil.Process() (cross-platform, replaces `/proc/[pid]`)
 - **Refresh Rate**: 2 seconds (configurable in source)
+- **Layout**: Adaptive box width (`min(120, terminal_width - 2)`), computed bar widths, and per-section two-column/single-column breakpoints. All drawing goes through a single bounds-clipping `_safe_addstr()` helper
+- **Resize handling**: `SIGWINCH` triggers a kernel `TIOCGWINSZ` query (not the stale curses `getmaxyx()` cache), then `resizeterm()` + `clear()`
+
+## Testing
+
+Two harnesses cover the layout; both must be clean after any change to the draw path.
+
+```bash
+# MockStdscr sweep — 2,820 configs (widths 20-160 x 5 heights x NVIDIA/UMA x 2 scroll offsets)
+python3 tests/test_responsive_layout.py
+
+# Render specific widths for visual inspection
+python3 tests/test_responsive_layout.py --render 80,50,30
+
+# Real PTY + curses, parsed with pyte — 9 static sizes and 5 live SIGWINCH resizes
+python3 tests/test_pty_layout.py          # requires: pip3 install pyte
+python3 tests/test_pty_layout.py --show 80
+```
+
+The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
 
