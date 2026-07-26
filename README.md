@@ -132,6 +132,17 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Development Timeline
 
+### v1.16.0 (2026-07-26)
+- **Fully responsive layout**: the dashboard now reflows to any terminal size instead of wrapping around and overwriting itself when the window is made narrower than the content (nvtop-style behaviour).
+  - **Adaptive box width**: replaced `max(80, min(120, width * 0.85))` with `min(120, width - 2)`. The old 80-column floor meant that at 60 columns the app still drew an 80-wide box, and every write past the right edge wrapped onto the next line and clobbered it. The box now fills the terminal with a 1-char margin.
+  - **`_safe_addstr()` bounds guard**: every single write in the draw path goes through one clipping helper that respects both the terminal edge and the box's right border (`max_x`). Zero raw `addstr` calls remain outside the helper.
+  - **Adaptive bar widths**: `_bar_width()` sizes progress bars from the space actually available (measured overhead, not estimates), clamped to `[5, 20]`, instead of a hardcoded `BAR_WIDTH = 20`.
+  - **Layout mode switching**: Memory (Mem/Swap), CPU (per-core), and GPU (Util/VRAM, name/temp+power) each drop from two columns to stacked single-column rows at their own measured breakpoints. Info strings shorten progressively so values are never clipped mid-number.
+  - **Removed hardcoded column offsets**: the GPU section's `left_col_width = 43` and the memory section's `+ 16` right-column offset are now computed from real content lengths.
+  - **True resize handling (the actual root cause)**: curses caches `LINES`/`COLS` at `initscr()`, so `stdscr.getmaxyx()` returns the *old* geometry right after `SIGWINCH` — feeding it back into `resizeterm()` was a no-op and the app kept rendering at the previous width. `_true_terminal_size()` now queries the kernel via `TIOCGWINSZ` and `_apply_resize()` resizes then clears stale cells.
+  - **Graceful degradation**: renders cleanly down to ~28 columns; below 24 shows a "Terminal too small" notice. The help popup shrinks to fit and drops lines rather than overflowing.
+- **Test harnesses added**: `tests/test_responsive_layout.py` (MockStdscr, sweeps widths 20–160 × 5 heights × 2 GPU backends × 2 scroll offsets = 2,820 configs, asserts no out-of-bounds write and consistent box edges) and `tests/test_pty_layout.py` (real PTY + `pyte`, verifies actual curses output at 9 static sizes and 5 **live** resizes). Both pass with zero failures; the mock suite reports 2,592 failures against v1.15.0, confirming it detects the original bug.
+
 ### v1.15.0 (2026-07-24)
 - **Fix GPU util sentinel**: `_apple_gpu_util_*` tiers now return `Optional[Tuple]` — `None` means "tool unavailable", `(0.0, 0.0)` means "ran but GPU was genuinely idle". Old code used `!= (0.0, 0.0)` which skipped real idle readings. Added `try/except ValueError` around float parsing in powermetrics tier for malformed output.
 

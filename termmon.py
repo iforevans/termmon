@@ -41,13 +41,17 @@ License:
 
 import curses
 import concurrent.futures
+import fcntl
+import io
 import json
 import os
 import platform
 import signal
 import shutil
+import struct
 import subprocess
 import sys
+import termios
 import threading
 from datetime import datetime
 import logging
@@ -67,13 +71,22 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.15.0"
+__version__ = "1.16.0"
 __author__ = "Ifor Evans"
 
 
 # Layout configuration
-BAR_WIDTH = 20         # Width of progress bars
+BAR_WIDTH = 20         # Maximum width of progress bars
+MIN_BAR_WIDTH = 5      # Bars never shrink below this before layout switches mode
+MAX_BOX_WIDTH = 120    # Cap so the dashboard stays readable on ultra-wide terminals
+MIN_BOX_WIDTH = 24     # Below this the terminal is too small to render anything useful
 REFRESH_INTERVAL = 2   # Seconds between auto-refreshes
+
+# Responsive breakpoints (box width in columns). Derived from measured format
+# string lengths — see _draw_*_section for the per-section overhead arithmetic.
+MEM_TWO_COL_MIN = 70   # Mem + Swap side by side
+GPU_TWO_COL_MIN = 84   # Util + VRAM side by side
+GPU_HEADER_TWO_COL_MIN = 62  # GPU name + temp/power on one row
 
 # Color pair IDs
 COLOR_TITLE = 1         # White - title and footer
@@ -122,6 +135,59 @@ class TermMon:
     def _on_resize(self, signum: int, frame: Any) -> None:
         """Handle terminal resize (SIGWINCH)."""
         self._resized = True
+
+    @staticmethod
+    def _true_terminal_size() -> Optional[Tuple[int, int]]:
+        """
+        Ask the kernel for the real window size as (rows, cols).
+
+        curses caches LINES/COLS at initscr() time, so stdscr.getmaxyx() still
+        reports the OLD geometry immediately after SIGWINCH. Feeding that stale
+        value back into resizeterm() is a no-op, which leaves the app drawing at
+        the previous width — content then wraps around and overwrites itself.
+        Querying TIOCGWINSZ directly avoids that trap.
+        """
+        for stream in (sys.stdout, sys.stdin, sys.stderr):
+            try:
+                packed = fcntl.ioctl(stream.fileno(), termios.TIOCGWINSZ, b'\0' * 8)
+                rows, cols = struct.unpack('HHHH', packed)[:2]
+                if rows > 0 and cols > 0:
+                    return rows, cols
+            except (OSError, ValueError, AttributeError, io.UnsupportedOperation):
+                continue
+        try:
+            size = os.get_terminal_size()
+            return size.lines, size.columns
+        except OSError:
+            return None
+
+    def _apply_resize(self, stdscr) -> None:
+        """
+        Re-synchronise curses with the real terminal size after SIGWINCH.
+
+        Order matters: get the true size from the kernel, tell curses about it,
+        then clear so no stale cells from the larger geometry survive.
+        """
+        size = self._true_terminal_size()
+        if size is not None:
+            rows, cols = size
+        else:
+            rows, cols = stdscr.getmaxyx()
+
+        try:
+            curses.resizeterm(rows, cols)
+        except (curses.error, AttributeError):
+            try:
+                curses.update_lines_cols()
+            except (OSError, AttributeError):
+                pass
+
+        # Drop every stale cell — a shrink leaves characters from the old,
+        # wider frame behind otherwise.
+        try:
+            stdscr.clear()
+        except curses.error:
+            pass
 
     @staticmethod
     def _get_core_count() -> int:
@@ -790,8 +856,81 @@ class TermMon:
         except KeyboardInterrupt:
             raise
     
+    def _safe_addstr(
+            self, stdscr, y: int, x: int, text: str, attr: int = 0, max_x: int = 0
+        ) -> None:
+        """
+        Write text at (y, x), clipped to terminal bounds and optionally to max_x.
+
+        This is the single choke point that makes the UI responsive: curses
+        wraps writes that run past the right edge onto the next line, which
+        overwrites content already drawn there. Clipping every write kills that
+        class of bug outright.
+
+        Args:
+            stdscr: Curses window
+            y, x: Target position
+            text: Text to write
+            attr: Optional curses attribute bundle
+            max_x: Optional exclusive right boundary (e.g. the box border
+                   column) so content cannot leak past a box edge even when it
+                   would still fit on the terminal.
+        """
+        try:
+            h, w = stdscr.getmaxyx()
+        except curses.error:
+            return
+
+        if y < 0 or y >= h or x >= w:
+            return
+
+        # Negative x: drop the leading chars that fall off the left edge.
+        if x < 0:
+            text = text[-x:]
+            x = 0
+
+        max_len = w - x
+        if max_x > 0:
+            max_len = min(max_len, max_x - x)
+        if max_len <= 0:
+            return
+
+        if len(text) > max_len:
+            text = text[:max_len]
+        if not text:
+            return
+
+        try:
+            if attr:
+                stdscr.addstr(y, x, text, attr)
+            else:
+                stdscr.addstr(y, x, text)
+        except curses.error:
+            # Writing the terminal's very last cell legitimately raises.
+            pass
+
+    @staticmethod
+    def _bar_width(bw: int, two_col: bool, overhead: int) -> int:
+        """
+        Compute a progress-bar width that actually fits the current box.
+
+        Args:
+            bw: Current box width
+            two_col: True when the bar appears twice on the same row
+            overhead: Chars on the row consumed by borders, labels, info
+                      strings and gaps (everything that is not a bar)
+
+        Returns:
+            Bar width clamped to [MIN_BAR_WIDTH, BAR_WIDTH]
+        """
+        available = bw - 2 - overhead  # -2 for the box borders
+        if two_col:
+            available //= 2
+        return max(MIN_BAR_WIDTH, min(BAR_WIDTH, available))
+
     def draw_bar(
-            self, stdscr, y: int, x: int, percent: float, width: int, color_pair: int
+            self, stdscr, y: int, x: int, percent: float, width: int,
+            color_pair: int, max_x: int = 0
         ) -> None:
         """
         Draw a progress bar with filled and empty blocks.
@@ -802,6 +941,7 @@ class TermMon:
             percent: Percentage (0-100)
             width: Number of blocks
             color_pair: Curses color pair ID
+            max_x: Optional exclusive right boundary (box border column)
         
         Note: Shows at least 1 filled block if percent > 0.
         """
@@ -813,17 +953,14 @@ class TermMon:
             filled = 0
         filled = min(filled, width)
         empty = width - filled
-        
-        try:
-            stdscr.attron(curses.color_pair(color_pair) | curses.A_BOLD)
-            if filled > 0:
-                stdscr.addstr(y, x, '█' * filled)
-            stdscr.attroff(curses.color_pair(color_pair) | curses.A_BOLD)
-            
-            if empty > 0:
-                stdscr.addstr(y, x + filled, '░' * empty)
-        except curses.error:
-            pass
+
+        if filled > 0:
+            self._safe_addstr(
+                stdscr, y, x, '█' * filled,
+                curses.color_pair(color_pair) | curses.A_BOLD, max_x,
+            )
+        if empty > 0:
+            self._safe_addstr(stdscr, y, x + filled, '░' * empty, 0, max_x)
     
     def _show_help(self, stdscr) -> None:
         """Show a styled help popup (white-on-blue, blocking until key press)."""
@@ -831,8 +968,22 @@ class TermMon:
         self.draw(stdscr)
         
         h, w = stdscr.getmaxyx()
-        box_w = min(36, w - 2)
-        box_h = 10
+
+        help_lines = [
+            " q  - Quit",
+            " r  - Refresh now",
+            " h  - Show help (this)",
+            " ←→ - Scroll process table",
+        ]
+
+        # Popup must fit the terminal: shrink width, and drop help lines before
+        # letting the box run off the bottom.
+        box_w = min(36, max(0, w - 2))
+        max_h = max(0, h - 2)
+        box_h = min(len(help_lines) + 6, max_h)
+        if box_w < 12 or box_h < 6:
+            return  # No room for a legible popup — silently skip
+        visible_lines = help_lines[:box_h - 6]
         
         start_y = max(0, (h - box_h) // 2)
         start_x = max(0, (w - box_w) // 2)
@@ -844,49 +995,47 @@ class TermMon:
             
             # Draw colored background box
             for row in range(box_h):
-                stdscr.attron(popup_attr)
-                stdscr.addnstr(start_y + row, start_x, " " * box_w, box_w)
-            stdscr.attroff(popup_attr)
+                self._safe_addstr(stdscr, start_y + row, start_x, " " * box_w, popup_attr)
             
             # Draw border
-            stdscr.attron(popup_attr)
-            stdscr.addnstr(start_y, start_x, "+" + "-" * (box_w - 2) + "+", box_w)
-            stdscr.addnstr(start_y + box_h - 1, start_x, "+" + "-" * (box_w - 2) + "+", box_w)
+            self._safe_addstr(
+                stdscr, start_y, start_x, "+" + "-" * (box_w - 2) + "+", popup_attr,
+            )
+            self._safe_addstr(
+                stdscr, start_y + box_h - 1, start_x, "+" + "-" * (box_w - 2) + "+", popup_attr,
+            )
             for row in range(1, box_h - 1):
-                stdscr.addnstr(start_y + row, start_x, "|", 1)
-                stdscr.addnstr(start_y + row, start_x + box_w - 1, "|", 1)
-            stdscr.attroff(popup_attr)
+                self._safe_addstr(stdscr, start_y + row, start_x, "|", popup_attr)
+                self._safe_addstr(stdscr, start_y + row, start_x + box_w - 1, "|", popup_attr)
             
             # Title - yellow bold on blue
             title = " KEYBINDINGS "
-            title_x = start_x + (box_w - len(title)) // 2
-            stdscr.attron(curses.color_pair(COLOR_SWAP) | curses.A_BOLD)
-            stdscr.addnstr(start_y + 1, title_x, title, box_w)
-            stdscr.attroff(curses.color_pair(COLOR_SWAP) | curses.A_BOLD)
+            title_x = start_x + max(0, (box_w - len(title)) // 2)
+            self._safe_addstr(
+                stdscr, start_y + 1, title_x, title,
+                curses.color_pair(COLOR_SWAP) | curses.A_BOLD, start_x + box_w - 1,
+            )
             
             # Divider
-            stdscr.attron(popup_attr)
-            stdscr.addnstr(start_y + 2, start_x + 1, "-" * (box_w - 2), box_w - 2)
-            stdscr.attroff(popup_attr)
+            self._safe_addstr(
+                stdscr, start_y + 2, start_x + 1, "-" * (box_w - 2),
+                popup_attr, start_x + box_w - 1,
+            )
             
             # Help lines - white on blue background
-            help_lines = [
-                " q  - Quit",
-                " r  - Refresh now",
-                " h  - Show help (this)",
-                " ←→ - Scroll process table",
-            ]
-            for i, line in enumerate(help_lines):
+            for i, line in enumerate(visible_lines):
                 pad = " " + line.ljust(box_w - 3)
-                stdscr.attron(popup_attr)
-                stdscr.addnstr(start_y + 3 + i, start_x + 1, pad, box_w - 2)
-                stdscr.attroff(popup_attr)
+                self._safe_addstr(
+                    stdscr, start_y + 3 + i, start_x + 1, pad[:box_w - 2],
+                    popup_attr, start_x + box_w - 1,
+                )
             
             # Footer prompt
             prompt = " Press any key ".center(box_w - 2)
-            stdscr.attron(popup_attr)
-            stdscr.addnstr(start_y + box_h - 2, start_x + 1, prompt, box_w - 2)
-            stdscr.attroff(popup_attr)
+            self._safe_addstr(
+                stdscr, start_y + box_h - 2, start_x + 1, prompt[:box_w - 2],
+                popup_attr, start_x + box_w - 1,
+            )
             
             stdscr.refresh()
             stdscr.getch()  # Block until key press
@@ -911,45 +1060,78 @@ class TermMon:
             Next y position after the section
         """
         sysdata = snapshot['system_data']
-        try:
-            # Box header
-            stdscr.addstr(y, x, "┌" + "─" * (bw - 2) + "┐")
+        right_edge = x + bw          # exclusive terminal-side boundary
+        border_x = x + bw - 1        # column of the closing "│"
+
+        # Box header
+        self._safe_addstr(stdscr, y, x, "┌" + "─" * (bw - 2) + "┐", 0, right_edge)
+        y += 1
+        self._safe_addstr(stdscr, y, x, ("│ SYSTEM MEMORY").ljust(bw - 1) + "│", 0, right_edge)
+        y += 1
+        self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
+        y += 1
+
+        mem_pct = sysdata.get('mem_percent', 0)
+        used_gb = sysdata.get('used_mem_gb', 0)
+        total_gb = sysdata.get('total_mem_gb', 0)
+        swap_pct = sysdata.get('swap_percent', 0)
+        swap_used_gb = sysdata.get('swap_used_mb', 0) / 1024
+        swap_total_gb = sysdata.get('swap_total_mb', 0) / 1024
+
+        mem_info = f" {used_gb:5.1f}GB/{total_gb:4.1f}G {mem_pct:5.1f}%"
+        swap_info = f" {swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB {swap_pct:5.1f}%"
+
+        # Overhead = "│ Mem: "(7) + info + gap(2) + "Swap:"(5) + info + "│"(1)
+        two_col = bw >= MEM_TWO_COL_MIN
+        gap = 2
+
+        if two_col:
+            overhead = 7 + len(mem_info) + gap + 5 + len(swap_info) + 1
+            bar_w = self._bar_width(bw, True, overhead)
+
+            # Blank the row first so nothing from a previous frame survives.
+            self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
+
+            self._safe_addstr(stdscr, y, x, "│ Mem:", 0, right_edge)
+            self.draw_bar(stdscr, y, x + 7, mem_pct, bar_w, COLOR_MEMORY, border_x)
+            self._safe_addstr(stdscr, y, x + 7 + bar_w, mem_info, 0, border_x)
+
+            # Right column starts immediately after the left column's content.
+            right_col_start = x + 7 + bar_w + len(mem_info) + gap
+            self._safe_addstr(stdscr, y, right_col_start, "Swap:", 0, border_x)
+            self.draw_bar(stdscr, y, right_col_start + 5, swap_pct, bar_w, COLOR_SWAP, border_x)
+            self._safe_addstr(stdscr, y, right_col_start + 5 + bar_w, swap_info, 0, border_x)
+
+            self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
             y += 1
-            stdscr.addstr(y, x, ("│ SYSTEM MEMORY").ljust(bw - 1) + "│")
-            y += 1
-            stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
-            y += 1
+        else:
+            # Narrow: stack Mem and Swap on their own rows. Shorten the info
+            # strings progressively so values are never clipped mid-number.
+            content_width = bw - 4
+            if content_width < 7 + MIN_BAR_WIDTH + len(mem_info) - 2:
+                mem_info = f" {used_gb:.1f}/{total_gb:.1f}G {mem_pct:.0f}%"
+                swap_info = f" {swap_used_gb:.1f}/{swap_total_gb:.1f}G {swap_pct:.0f}%"
+            if content_width < 7 + MIN_BAR_WIDTH + len(mem_info) - 2:
+                mem_info = f" {mem_pct:.0f}%"
+                swap_info = f" {swap_pct:.0f}%"
 
-            # Memory (left column) — 1-space side padding consistent with CPU/process sections
-            mem_pct = sysdata.get('mem_percent', 0)
-            used_gb = sysdata.get('used_mem_gb', 0)
-            total_gb = sysdata.get('total_mem_gb', 0)
+            overhead = 7 + max(len(mem_info), len(swap_info)) + 1
+            bar_w = self._bar_width(bw, False, overhead)
 
-            stdscr.addstr(y, x, "│ Mem:")
-            self.draw_bar(stdscr, y, x + 7, mem_pct, BAR_WIDTH, COLOR_MEMORY)
-            mem_info = f" {used_gb:5.1f}GB/{total_gb:4.1f}G {mem_pct:5.1f}%"
-            stdscr.addstr(y, x + 7 + BAR_WIDTH, mem_info)
+            for label, pct, info, color in (
+                ("│ Mem: ", mem_pct, mem_info, COLOR_MEMORY),
+                ("│ Swap:", swap_pct, swap_info, COLOR_SWAP),
+            ):
+                self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
+                self._safe_addstr(stdscr, y, x, label, 0, right_edge)
+                self.draw_bar(stdscr, y, x + 7, pct, bar_w, color, border_x)
+                self._safe_addstr(stdscr, y, x + 7 + bar_w, info, 0, border_x)
+                self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
+                y += 1
 
-            # Swap (right column)
-            swap_pct = sysdata.get('swap_percent', 0)
-            swap_used_gb = sysdata.get('swap_used_mb', 0) / 1024
-            swap_total_gb = sysdata.get('swap_total_mb', 0) / 1024
-
-            right_col_start = x + 7 + BAR_WIDTH + 16  # after "│ Mem:" + bar + info
-            stdscr.addstr(y, right_col_start, "Swap:")
-            self.draw_bar(stdscr, y, right_col_start + 5, swap_pct, BAR_WIDTH, COLOR_SWAP)
-            swap_info = f" {swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB {swap_pct:5.1f}%"
-            stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, swap_info)
-
-            # Close the box
-            stdscr.addstr(y, x + bw - 1, "│")
-            y += 1
-
-            # Box footer
-            stdscr.addstr(y, x, "└" + "─" * (bw - 2) + "┘")
-            y += 2
-        except curses.error:
-            pass
+        # Box footer
+        self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
+        y += 2
 
         return y
     
@@ -969,95 +1151,118 @@ class TermMon:
             Next y position after the section
         """
         sysdata = snapshot['system_data']
-        try:
-            # Box header. Put overall CPU usage in the title to save one row on
-            # short iPad/mobile SSH terminals.
-            core_count = sysdata.get('core_count', 0)
-            cpu_pct = sysdata.get('cpu_usage', 0)
-            stdscr.addstr(y, x, "┌" + "─" * (bw - 2) + "┐")
-            y += 1
-            cpu_title = f" CPU ({core_count} cores, overall {cpu_pct:5.1f}%)"
-            stdscr.addstr(y, x, ("│" + cpu_title).ljust(bw - 1) + "│")
-            y += 1
-            stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
-            y += 1
+        right_edge = x + bw
+        core_count = sysdata.get('core_count', 0)
+        cpu_pct = sysdata.get('cpu_usage', 0)
 
-            # Per-core usage in TWO columns
-            per_core = sysdata.get('per_core_usage', [])
-            
-            # Calculate split point (half the cores in each column)
-            mid_point = (core_count + 1) // 2
-            
-            # Draw cores in two columns. Build each row as one complete string
-            # instead of several positioned addstr/draw_bar calls; this avoids
-            # stale characters and cursor-position weirdness on narrow/mobile
-            # terminals where partial curses writes can visually drift.
-            content_width = bw - 4  # -2 for borders, -2 for side padding
-            gap_width = 2
+        # Box header. Overall CPU usage lives in the title to save one row on
+        # short iPad/mobile SSH terminals.
+        self._safe_addstr(stdscr, y, x, "┌" + "─" * (bw - 2) + "┐", 0, right_edge)
+        y += 1
+        cpu_title = f" CPU ({core_count} cores, overall {cpu_pct:5.1f}%)"
+        if len(cpu_title) > bw - 2:
+            cpu_title = f" CPU {cpu_pct:5.1f}%"
+        self._safe_addstr(stdscr, y, x, ("│" + cpu_title).ljust(bw - 1)[:bw - 1] + "│", 0, right_edge)
+        y += 1
+        self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
+        y += 1
+
+        per_core = sysdata.get('per_core_usage', [])
+
+        # Build each row as one complete string instead of several positioned
+        # writes; this avoids stale characters and cursor drift on narrow
+        # terminals, then overlay only the coloured filled blocks.
+        content_width = bw - 4  # -2 for borders, -2 for side padding
+        gap_width = 2
+
+        # Keep labels aligned for Core 10+ without wasting a chunk of spaces
+        # before the bar. The percentage sits after the bar.
+        label_width = len(f"Core {max(0, core_count - 1)}:") + 1
+        pct_len = len(f" {100.0:5.1f}%")
+
+        # A cell needs label + a usable bar + percentage. If two of them don't
+        # fit, drop to a single column of cores.
+        min_cell = label_width + MIN_BAR_WIDTH + pct_len
+        two_col = content_width >= (min_cell * 2 + gap_width)
+
+        if two_col:
             col_width = (content_width - gap_width) // 2
             right_width = content_width - gap_width - col_width
+            rows = (core_count + 1) // 2
+        else:
+            col_width = content_width
+            right_width = 0
+            rows = core_count
 
-            def bar_parts(percent: float, width: int) -> Tuple[str, int]:
-                pct = max(0, min(100, percent))
-                if pct > 0:
-                    filled = max(1, int(pct / 100.0 * width))
-                else:
-                    filled = 0
-                filled = min(filled, width)
-                return "█" * filled + "░" * (width - filled), filled
+        def bar_parts(percent: float, width: int) -> Tuple[str, int]:
+            pct = max(0, min(100, percent))
+            if pct > 0:
+                filled = max(1, int(pct / 100.0 * width))
+            else:
+                filled = 0
+            filled = min(filled, width)
+            return "█" * filled + "░" * (width - filled), filled
 
-            # Keep labels aligned for Core 10+ but do not waste a whole chunk of
-            # spaces before the bar. The percentage moves after the bar, so the
-            # utilization graphic starts almost immediately after `Core n:`.
-            label_width = len(f"Core {max(0, core_count - 1)}:") + 1
+        def core_cell(core_id: int, core_pct: float, width: int) -> Tuple[str, int, int]:
+            label = f"Core {core_id}:".ljust(label_width)
+            pct_text = f" {core_pct:5.1f}%"
+            # Very narrow cells: drop the label to a bare index, then the
+            # percentage, before letting the bar disappear entirely.
+            if width < len(label) + MIN_BAR_WIDTH + len(pct_text):
+                label = f"{core_id}:".ljust(min(label_width, 4))
+            if width < len(label) + MIN_BAR_WIDTH + len(pct_text):
+                pct_text = ""
+            bar_width = max(1, width - len(label) - len(pct_text))
+            bar, filled = bar_parts(core_pct, bar_width)
+            text = label + bar + pct_text
+            return text[:width].ljust(width), len(label), filled
 
-            def core_cell(core_id: int, core_pct: float, width: int) -> Tuple[str, int, int]:
-                label = f"Core {core_id}:".ljust(label_width)
-                pct_text = f" {core_pct:5.1f}%"
-                bar_width = max(1, width - len(label) - len(pct_text))
-                bar, filled = bar_parts(core_pct, bar_width)
-                text = label + bar + pct_text
-                return text[:width].ljust(width), len(label), filled
+        cpu_attr = curses.color_pair(COLOR_CPU) | curses.A_BOLD
 
-            for i in range(mid_point):
-                if y >= height - 3:
-                    break  # Don't draw off-screen
+        for i in range(rows):
+            if y >= height - 3:
+                break  # Don't draw off-screen
 
-                left = "".ljust(col_width)
-                left_bar_start = 0
-                left_filled = 0
-                if i < len(per_core):
-                    core_id, core_pct = per_core[i]
-                    left, left_bar_start, left_filled = core_cell(core_id, core_pct, col_width)
+            left = "".ljust(col_width)
+            left_bar_start = 0
+            left_filled = 0
+            if i < len(per_core):
+                core_id, core_pct = per_core[i]
+                left, left_bar_start, left_filled = core_cell(core_id, core_pct, col_width)
 
+            if two_col:
                 right = "".ljust(right_width)
                 right_bar_start = 0
                 right_filled = 0
-                right_idx = i + mid_point
+                right_idx = i + rows
                 if right_idx < len(per_core):
                     core_id, core_pct = per_core[right_idx]
                     right, right_bar_start, right_filled = core_cell(core_id, core_pct, right_width)
-
                 line = "│ " + left + " " * gap_width + right + " │"
-                stdscr.addstr(y, x, line[:bw])
+            else:
+                right_bar_start = right_filled = 0
+                line = "│ " + left + " │"
 
-                # Restore colored CPU utilization bars without returning to the
-                # old many-position write pattern. Draw the full stable row once,
-                # then overlay only the filled bar blocks with the CPU color.
-                cpu_attr = curses.color_pair(COLOR_CPU) | curses.A_BOLD
-                if left_filled > 0:
-                    stdscr.addstr(y, x + 2 + left_bar_start, "█" * left_filled, cpu_attr)
-                if right_filled > 0:
-                    right_x = x + 2 + col_width + gap_width + right_bar_start
-                    stdscr.addstr(y, right_x, "█" * right_filled, cpu_attr)
-                y += 1
+            self._safe_addstr(stdscr, y, x, line[:bw], 0, right_edge)
 
-            # Box footer
-            stdscr.addstr(y, x, "└" + "─" * (bw - 2) + "┘")
-            y += 2
-        except curses.error:
-            pass
-        
+            # Overlay only the filled bar blocks with the CPU colour. The +2
+            # accounts for the border plus the 1-space left padding.
+            if left_filled > 0:
+                self._safe_addstr(
+                    stdscr, y, x + 2 + left_bar_start, "█" * left_filled,
+                    cpu_attr, x + bw - 1,
+                )
+            if two_col and right_filled > 0:
+                right_x = x + 2 + col_width + gap_width + right_bar_start
+                self._safe_addstr(
+                    stdscr, y, right_x, "█" * right_filled, cpu_attr, x + bw - 1,
+                )
+            y += 1
+
+        # Box footer
+        self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
+        y += 2
+
         return y
     
     def _gpu_section_title(self) -> str:
@@ -1084,89 +1289,156 @@ class TermMon:
         separate VRAM, shows GPU cores instead).
         """
         gpu_data = snapshot['gpu_data']
-        try:
-            # Box header
-            stdscr.addstr(y, x, "┌" + "─" * (bw - 2) + "┐")
-            y += 1
-            stdscr.addstr(y, x, ("│ " + self._gpu_section_title()).ljust(bw - 1) + "│")
-            y += 1
-            stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
-            y += 1
+        right_edge = x + bw
+        border_x = x + bw - 1
 
-            if not gpu_data:
-                msg = "│ " + self._gpu_no_data_message()
-                stdscr.addstr(y, x, (msg + " " * (bw - len(msg) - 1))[:bw-1] + "│")
+        # Box header
+        self._safe_addstr(stdscr, y, x, "┌" + "─" * (bw - 2) + "┐", 0, right_edge)
+        y += 1
+        self._safe_addstr(
+            stdscr, y, x,
+            ("│ " + self._gpu_section_title()).ljust(bw - 1)[:bw - 1] + "│", 0, right_edge,
+        )
+        y += 1
+        self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
+        y += 1
+
+        if not gpu_data:
+            msg = " " + self._gpu_no_data_message()
+            self._safe_addstr(
+                stdscr, y, x, ("│" + msg).ljust(bw - 1)[:bw - 1] + "│", 0, right_edge,
+            )
+            y += 1
+        else:
+            for gpu in gpu_data:
+                if y >= height - 3:
+                    break
+                is_uma = gpu.get('is_uma', False)
+                gpu_cores = gpu.get('gpu_cores', 0)
+
+                # --- Row 1: GPU name (left) | Temp + Power (right) ---
+                if is_uma:
+                    core_info = f" ({gpu_cores}-core GPU)" if gpu_cores else ""
+                    gpu_name = f"{gpu['name']}{core_info}"
+                else:
+                    gpu_name = f"GPU {gpu['idx']}: {gpu['name']}"
+
+                if gpu['temp'] > 0:
+                    temp_power = f"Temp: {gpu['temp']:5.0f}°C  Power: {gpu['power']:6.1f}W"
+                else:
+                    temp_power = f"Power: {gpu['power']:6.1f}W"
+
+                # Blank the row, then place name left and temp/power right.
+                self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
+
+                content_width = bw - 4  # borders + 1-space padding each side
+                if bw >= GPU_HEADER_TWO_COL_MIN and len(temp_power) + 2 < content_width:
+                    # Right-align temp/power against the inner right edge.
+                    name_room = content_width - len(temp_power) - 2
+                    self._safe_addstr(stdscr, y, x, "│ " + gpu_name[:name_room], 0, border_x)
+                    self._safe_addstr(
+                        stdscr, y, border_x - 1 - len(temp_power), temp_power, 0, border_x,
+                    )
+                else:
+                    # Too narrow for both: name on this row, temp/power below.
+                    self._safe_addstr(stdscr, y, x, "│ " + gpu_name[:content_width], 0, border_x)
+                    self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
+                    y += 1
+                    if y >= height - 3:
+                        break
+                    self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
+                    self._safe_addstr(stdscr, y, x, "│ " + temp_power[:content_width], 0, border_x)
+
+                self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
                 y += 1
-            else:
-                for gpu in gpu_data:
-                    is_uma = gpu.get('is_uma', False)
-                    gpu_cores = gpu.get('gpu_cores', 0)
+                if y >= height - 3:
+                    break
 
-                    # Calculate column positions
-                    left_col_width = 43  # GPU name takes ~43 chars (shifted +1 for padding)
-                    right_col_start = x + left_col_width
+                # --- Row 2: Util (left) | VRAM or UMA info (right) ---
+                util_info = f" {gpu['gpu_util']:6.1f}%"
+                self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
 
-                    # Row 1: GPU name (left) | Temp + Power (right) - SAME LINE
-                    if is_uma:
-                        # Apple Silicon: show name + core count
-                        core_info = f" ({gpu_cores}-core GPU)" if gpu_cores else ""
-                        gpu_name = f" {gpu['name'][:35]}{core_info}"
-                    else:
-                        gpu_name = f"GPU {gpu['idx']}: {gpu['name'][:35]}"
+                if is_uma:
+                    uma_text = "UMA: shared w/ system memory"
+                    # Overhead: "│ Util:"(7) + util_info + gap(2) + uma text + "│"(1)
+                    overhead = 7 + len(util_info) + 2 + len(uma_text) + 1
+                    two_col = bw - 2 - overhead >= MIN_BAR_WIDTH
+                    bar_w = self._bar_width(bw, False, overhead if two_col else 7 + len(util_info) + 1)
 
-                    if gpu['temp'] > 0:
-                        temp_power = f"Temp: {gpu['temp']:5.0f}°C  Power: {gpu['power']:6.1f}W"
-                    else:
-                        temp_power = f"Power: {gpu['power']:6.1f}W"
-
-                    # Build the combined line
-                    line = f"│ {gpu_name}"
-                    stdscr.addstr(y, x, line)
-
-                    # Add temp/power on the right
-                    stdscr.addstr(y, right_col_start, temp_power)
-                    stdscr.addstr(y, x + bw - 1, "│")
-                    y += 1
-
-                    # Row 2: Util (left) | VRAM or UMA info (right)
-                    # Left column: Util
-                    left_label = "│ Util:"
-                    stdscr.addstr(y, x, left_label)
-                    self.draw_bar(stdscr, y, x + 7, gpu['gpu_util'], BAR_WIDTH, COLOR_CPU)
-                    util_info = f" {gpu['gpu_util']:6.1f}%"
-                    stdscr.addstr(y, x + 7 + BAR_WIDTH, util_info)
-
-                    # Right column: VRAM (NVIDIA) or UMA info (Apple)
-                    if is_uma:
-                        right_label = "UMA:"
-                        stdscr.addstr(y, right_col_start, right_label)
-                        uma_info = " shared w/ system memory"
-                        stdscr.addstr(y, right_col_start + 4, uma_info)
-                    else:
-                        mem_pct = (gpu['mem_used'] / gpu['mem_total']) * 100 if gpu['mem_total'] > 0 else 0
-                        mem_used_gb = gpu['mem_used'] / 1024
-                        mem_total_gb = gpu['mem_total'] / 1024
-
-                        right_label = "VRAM:"
-                        stdscr.addstr(y, right_col_start, right_label)
-                        self.draw_bar(stdscr, y, right_col_start + 5, mem_pct, BAR_WIDTH, COLOR_VRAM)
-                        vram_info = f" {mem_used_gb:5.1f}GB/{mem_total_gb:4.1f}G {mem_pct:5.1f}%"
-                        stdscr.addstr(y, right_col_start + 5 + BAR_WIDTH, vram_info)
-
-                    # Close the box
-                    stdscr.addstr(y, x + bw - 1, "│")
-                    y += 1
-
-                    # Separator between GPUs (if more GPUs and space available)
-                    if y < height - 3 and int(gpu['idx']) < len(gpu_data) - 1:
-                        stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
+                    self._safe_addstr(stdscr, y, x, "│ Util:", 0, right_edge)
+                    self.draw_bar(stdscr, y, x + 7, gpu['gpu_util'], bar_w, COLOR_CPU, border_x)
+                    self._safe_addstr(stdscr, y, x + 7 + bar_w, util_info, 0, border_x)
+                    if two_col:
+                        self._safe_addstr(
+                            stdscr, y, x + 7 + bar_w + len(util_info) + 2, uma_text, 0, border_x,
+                        )
+                        self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
                         y += 1
+                    else:
+                        self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
+                        y += 1
+                        if y < height - 3:
+                            self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
+                            self._safe_addstr(stdscr, y, x, "│ " + uma_text[:bw - 4], 0, border_x)
+                            self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
+                            y += 1
+                else:
+                    mem_pct = (gpu['mem_used'] / gpu['mem_total']) * 100 if gpu['mem_total'] > 0 else 0
+                    mem_used_gb = gpu['mem_used'] / 1024
+                    mem_total_gb = gpu['mem_total'] / 1024
+                    vram_info = f" {mem_used_gb:5.1f}GB/{mem_total_gb:4.1f}G {mem_pct:5.1f}%"
 
-            # Box footer
-            stdscr.addstr(y, x, "└" + "─" * (bw - 2) + "┘")
-            y += 2
-        except curses.error:
-            pass
+                    # Overhead = "│ Util:"(7) + util_info + gap(2) + "VRAM:"(5)
+                    #            + vram_info + "│"(1)
+                    two_col = bw >= GPU_TWO_COL_MIN
+                    if two_col:
+                        overhead = 7 + len(util_info) + 2 + 5 + len(vram_info) + 1
+                        bar_w = self._bar_width(bw, True, overhead)
+                    else:
+                        overhead = 7 + len(util_info) + 1
+                        bar_w = self._bar_width(bw, False, overhead)
+
+                    self._safe_addstr(stdscr, y, x, "│ Util:", 0, right_edge)
+                    self.draw_bar(stdscr, y, x + 7, gpu['gpu_util'], bar_w, COLOR_CPU, border_x)
+                    self._safe_addstr(stdscr, y, x + 7 + bar_w, util_info, 0, border_x)
+
+                    if two_col:
+                        right_col_start = x + 7 + bar_w + len(util_info) + 2
+                        self._safe_addstr(stdscr, y, right_col_start, "VRAM:", 0, border_x)
+                        self.draw_bar(
+                            stdscr, y, right_col_start + 5, mem_pct, bar_w, COLOR_VRAM, border_x,
+                        )
+                        self._safe_addstr(
+                            stdscr, y, right_col_start + 5 + bar_w, vram_info, 0, border_x,
+                        )
+                        self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
+                        y += 1
+                    else:
+                        self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
+                        y += 1
+                        if y < height - 3:
+                            # VRAM gets its own row when narrow.
+                            vram_overhead = 7 + len(vram_info) + 1
+                            vram_bar_w = self._bar_width(bw, False, vram_overhead)
+                            self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
+                            self._safe_addstr(stdscr, y, x, "│ VRAM:", 0, right_edge)
+                            self.draw_bar(
+                                stdscr, y, x + 7, mem_pct, vram_bar_w, COLOR_VRAM, border_x,
+                            )
+                            self._safe_addstr(
+                                stdscr, y, x + 7 + vram_bar_w, vram_info, 0, border_x,
+                            )
+                            self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
+                            y += 1
+
+                # Separator between GPUs (if more GPUs and space available)
+                if y < height - 3 and int(gpu['idx']) < len(gpu_data) - 1:
+                    self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
+                    y += 1
+
+        # Box footer
+        self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
+        y += 2
 
         return y
     
@@ -1206,7 +1478,9 @@ class TermMon:
         cmd_width = max(0, view_width - len(fixed_visible))
         scroll = max(0, self.process_scroll_x)
         visible = fixed_visible + command[scroll:scroll + cmd_width]
-        stdscr.addstr(y, x, "│ " + visible.ljust(view_width) + " │")
+        self._safe_addstr(
+            stdscr, y, x, "│ " + visible.ljust(view_width)[:view_width] + " │", 0, x + width,
+        )
 
     def _max_process_scroll(self, bw: int, gpuprocs: List[Dict[str, Any]]) -> int:
         """Maximum horizontal scroll offset for the process table command column."""
@@ -1230,44 +1504,44 @@ class TermMon:
             Next y position after the section
         """
         gpuprocs = snapshot['gpu_processes']
-        try:
-            self.process_scroll_x = min(max(0, self.process_scroll_x), self._max_process_scroll(bw, gpuprocs))
+        right_edge = x + bw
+        self.process_scroll_x = min(max(0, self.process_scroll_x), self._max_process_scroll(bw, gpuprocs))
 
-            # Box header
-            stdscr.addstr(y, x, "┌" + "─" * (bw - 2) + "┐")
+        # Box header
+        self._safe_addstr(stdscr, y, x, "┌" + "─" * (bw - 2) + "┐", 0, right_edge)
+        y += 1
+
+        title = f" GPU PROCESSES  ←/→ scroll {self.process_scroll_x}"
+        self._safe_addstr(stdscr, y, x, ("│" + title).ljust(bw - 1)[:bw - 1] + "│", 0, right_edge)
+        y += 1
+
+        self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
+        y += 1
+
+        hdr = self._gpu_process_table_header()
+        self._safe_addstr(stdscr, y, x, ("│ " + hdr).ljust(bw - 1)[:bw - 1] + "│", 0, right_edge)
+        y += 1
+
+        if y < height - 3:
+            self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
             y += 1
 
-            title = f" GPU PROCESSES  ←/→ scroll {self.process_scroll_x}"
-            stdscr.addstr(y, x, ("│" + title).ljust(bw - 1)[:bw-1] + "│")
-            y += 1
-
-            stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
-            y += 1
-
-            hdr = self._gpu_process_table_header()
-            stdscr.addstr(y, x, ("│ " + hdr).ljust(bw - 1)[:bw-1] + "│")
-            y += 1
-
+        if not gpuprocs:
             if y < height - 3:
-                stdscr.addstr(y, x, "│" + "─" * (bw - 2) + "│")
+                self._draw_scrolled_process_line(stdscr, y, x, "", "No active GPU compute processes", bw)
+                y += 1
+        else:
+            for proc in gpuprocs:
+                if y >= height - 3:
+                    break  # Don't draw off-screen
+                self._draw_scrolled_process_line(
+                    stdscr, y, x, self._gpu_process_fixed_prefix(proc), self._process_command(proc), bw,
+                )
                 y += 1
 
-            if not gpuprocs:
-                if y < height - 3:
-                    self._draw_scrolled_process_line(stdscr, y, x, "", "No active GPU compute processes", bw)
-                    y += 1
-            else:
-                for proc in gpuprocs:
-                    if y >= height - 3:
-                        break  # Don't draw off-screen
-                    self._draw_scrolled_process_line(stdscr, y, x, self._gpu_process_fixed_prefix(proc), self._process_command(proc), bw)
-                    y += 1
-
-            # Box footer
-            stdscr.addstr(y, x, "└" + "─" * (bw - 2) + "┘")
-            y += 2
-        except curses.error:
-            pass
+        # Box footer
+        self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
+        y += 2
 
         return y
     
@@ -1291,24 +1565,36 @@ class TermMon:
 
         height, width = stdscr.getmaxyx()
 
-        # Calculate box width dynamically (85% of terminal width, min 80, max 120)
-        self._box_width = max(80, min(120, int(width * 0.85)))
-
         stdscr.erase()
+
+        # Terminal too small to render anything meaningful — say so rather than
+        # drawing a mangled dashboard.
+        if width < MIN_BOX_WIDTH or height < 6:
+            self._safe_addstr(stdscr, 0, 0, "Terminal too small"[:max(0, width - 1)])
+            if height > 1:
+                self._safe_addstr(stdscr, 1, 0, f"{width}x{height}"[:max(0, width - 1)])
+            stdscr.refresh()
+            return
+
+        # Box fills the available width (1-char margin each side), capped so the
+        # layout stays readable on ultra-wide terminals. No fixed floor — a
+        # floor is what caused content to wrap around and overwrite itself when
+        # the terminal was made narrower than the box.
+        self._box_width = max(MIN_BOX_WIDTH, min(MAX_BOX_WIDTH, width - 2))
 
         # Title
         title = f" termmon {__version__} - System Monitor | {datetime.now().strftime('%H:%M:%S')} | q:quit r:refresh h:help "
-        try:
-            stdscr.attron(curses.A_REVERSE)
-            stdscr.addstr(0, 0, title[:width-1].ljust(width-1)[:width-1])
-            stdscr.attroff(curses.A_REVERSE)
-        except curses.error:
-            pass
+        if len(title) > width - 1:
+            title = f" termmon {__version__} | {datetime.now().strftime('%H:%M:%S')} "
+        self._safe_addstr(
+            stdscr, 0, 0, title.ljust(width - 1)[:width - 1], curses.A_REVERSE,
+        )
 
         y = 2
-        x = (width - self._box_width) // 2
-        if x < 1:
-            x = 1
+        x = max(1, (width - self._box_width) // 2)
+        # Never let the box run past the right edge.
+        if x + self._box_width > width:
+            x = max(0, width - self._box_width)
 
         # Draw system memory section
         y = self._draw_memory_section(stdscr, y, x, snapshot, self._box_width)
@@ -1323,13 +1609,14 @@ class TermMon:
         y = self._draw_gpu_processes_section(stdscr, y, x, height, snapshot, self._box_width)
 
         # Footer
-        try:
-            footer = f" Refresh: {REFRESH_INTERVAL}s | q:quit r:refresh h:help ←/→:process scroll "
-            stdscr.attron(curses.A_REVERSE)
-            stdscr.addstr(height - 1, 0, footer[:width-1].ljust(width-1)[:width-1])
-            stdscr.attroff(curses.A_REVERSE)
-        except curses.error:
-            pass
+        footer = f" Refresh: {REFRESH_INTERVAL}s | q:quit r:refresh h:help ←/→:process scroll "
+        if len(footer) > width - 1:
+            footer = " q:quit r:refresh h:help ←/→:scroll "
+        if len(footer) > width - 1:
+            footer = " q:quit h:help "
+        self._safe_addstr(
+            stdscr, height - 1, 0, footer.ljust(width - 1)[:width - 1], curses.A_REVERSE,
+        )
 
         stdscr.refresh()
     
@@ -1390,16 +1677,7 @@ class TermMon:
                 # Handle terminal resize
                 if self._resized:
                     self._resized = False
-                    h, w = stdscr.getmaxyx()
-                    try:
-                        curses.resizeterm(h, w)
-                    except curses.error:
-                        # Fallback for platforms without resizeterm
-                        try:
-                            curses.update_lines_cols()
-                            stdscr.clear()
-                        except (OSError, AttributeError):
-                            pass
+                    self._apply_resize(stdscr)
                     self._stats_update_event.set()
                     last_refresh = current_time  # Force refresh on resize
                 
