@@ -189,11 +189,23 @@ FAKE_GPU_DATA_UMA = [{
 BOX_CHARS = set("┌┐└┘│─")
 
 
+def find_app_class(mod):
+    """Locate the app class: the one defining a draw() method."""
+    for name in dir(mod):
+        obj = getattr(mod, name)
+        if isinstance(obj, type) and 'draw' in getattr(obj, '__dict__', {}):
+            return obj
+    raise RuntimeError("No class with a draw() method found in the target module")
+
+
 def make_app(mod, gpu_data):
-    app = mod.TermMon()
-    app.system_data = dict(FAKE_SYSTEM_DATA)
-    app.gpu_data = list(gpu_data)
-    app.gpu_processes = list(FAKE_GPU_PROCESSES)
+    app = find_app_class(mod)()
+    if hasattr(app, 'system_data'):
+        app.system_data = dict(FAKE_SYSTEM_DATA)
+    if hasattr(app, 'gpu_data'):
+        app.gpu_data = list(gpu_data)
+    if hasattr(app, 'gpu_processes'):
+        app.gpu_processes = list(FAKE_GPU_PROCESSES)
     return app
 
 
@@ -250,12 +262,33 @@ def run_size(mod, width, height, gpu_data, scroll=0):
 def main():
     sys.modules['curses'] = FakeCurses
 
-    target = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'termmon.py')
-    target = os.path.normpath(target)
+    # Positional arg = path to the app under test. Defaults to ../<app>.py
+    # relative to this script (works when dropped into a repo's tests/ dir).
+    positional = [a for a in sys.argv[1:] if not a.startswith('--')]
+    # Drop values that belong to --render (e.g. "--render 80,50")
+    if '--render' in sys.argv:
+        idx = sys.argv.index('--render')
+        if idx + 1 < len(sys.argv):
+            consumed = sys.argv[idx + 1]
+            positional = [a for a in positional if a != consumed]
+
+    if positional:
+        target = os.path.abspath(os.path.expanduser(positional[0]))
+    else:
+        target = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'termmon.py')
+        )
+
+    if not os.path.isfile(target):
+        print(f"ERROR: app not found: {target}")
+        print(f"Usage: {os.path.basename(__file__)} [/path/to/app.py] [--render 80,50,30]")
+        return 2
+
+    module_name = os.path.splitext(os.path.basename(target))[0]
     sys.path.insert(0, os.path.dirname(target))
-    spec = importlib.util.spec_from_file_location('termmon', target)
+    spec = importlib.util.spec_from_file_location(module_name, target)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules['termmon'] = mod
+    sys.modules[module_name] = mod
     spec.loader.exec_module(mod)
 
     render_widths = set()
@@ -265,7 +298,7 @@ def main():
             render_widths = {int(v) for v in vals.split(',')}
 
     print("=" * 72)
-    print("TERMMON RESPONSIVE LAYOUT TEST")
+    print(f"RESPONSIVE LAYOUT TEST: {target}")
     print("=" * 72)
 
     failures = 0
