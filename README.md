@@ -193,6 +193,9 @@ The mock suite asserts no write lands outside the terminal grid and that box edg
 
 ## Development Timeline
 
+### v1.16.1 (2026-07-28)
+- **Clean terminal exit**: Added `clear` and cursor-visible escape (`\033[?25h`) after `curses.endwin()` so the screen is clean and the cursor is visible when termmon exits.
+
 ### v1.16.0 (2026-07-26)
 - **Fully responsive layout**: the dashboard now reflows to any terminal size instead of wrapping around and overwriting itself when the window is made narrower than the content (nvtop-style behaviour).
   - **Adaptive box width**: replaced `max(80, min(120, width * 0.85))` with `min(120, width - 2)`. The old 80-column floor meant that at 60 columns the app still drew an 80-wide box, and every write past the right edge wrapped onto the next line and clobbered it. The box now fills the terminal with a 1-char margin.

@@ -71,7 +71,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.16.0"
+__version__ = "1.16.1"
 __author__ = "Ifor Evans"
 
 
@@ -1722,6 +1722,9 @@ class TermMon:
             curses.echo()
             curses.endwin()
             self._gpu_data_executor.shutdown(wait=False)
+            # Restore the terminal: clear stale content and make the cursor visible.
+            subprocess.run(['clear'], stdout=sys.stdout)
+            os.write(sys.stderr.fileno(), b'\033[?25h\n')
 
 
 if __name__ == "__main__":
