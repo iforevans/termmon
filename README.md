@@ -193,6 +193,10 @@ The mock suite asserts no write lands outside the terminal grid and that box edg
 
 ## Development Timeline
 
+### v1.16.3 (2026-08-05)
+- **Help popup CPU spin fix**: `_show_help()` used `nodelay(False)`/`nodelay(True)` to toggle blocking input, but `run()` sets up input via `stdscr.timeout(50)`. The `nodelay(True)` restore permanently overrode the 50ms timeout, so after dismissing the help popup `getch()` returned -1 instantly every iteration, spinning the main loop at ~100% CPU. Replaced with `timeout(-1)` (block) / `timeout(50)` (restore). Verified empirically: idle 2.0% → 99.5% before fix, 2.0% → 2.0% after.
+- **DRY refresh interval**: main loop's draw trigger used a hardcoded `2` instead of the `REFRESH_INTERVAL` constant, so changing the constant would desync the main loop from the background thread.
+
 ### v1.16.1 (2026-07-28)
 - **Clean terminal exit**: Added `clear` and cursor-visible escape (`\033[?25h`) after `curses.endwin()` so the screen is clean and the cursor is visible when termmon exits.
 
