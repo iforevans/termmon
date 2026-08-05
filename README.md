@@ -193,6 +193,10 @@ The mock suite asserts no write lands outside the terminal grid and that box edg
 
 ## Development Timeline
 
+### v1.16.4 (2026-08-05)
+- **GPU collection error logging**: `_stats_updater_thread` now logs GPU data collection failures via `logger.error()` instead of silently swallowing exceptions. Persistent nvidia-smi failures (driver crash, permission loss) are now visible in logs.
+- **Removed dead startup CPU seed loop**: `run()` no longer iterates all system processes to seed `cpu_percent`. The targeted `_seed_cpu_percent()` calls inside `_get_gpu_processes_nvidia` and `_get_gpu_processes_apple` already seed only the PIDs that appear in the GPU table, eliminating O(N) wasted psutil calls at startup.
+
 ### v1.16.3 (2026-08-05)
 - **Help popup CPU spin fix**: `_show_help()` used `nodelay(False)`/`nodelay(True)` to toggle blocking input, but `run()` sets up input via `stdscr.timeout(50)`. The `nodelay(True)` restore permanently overrode the 50ms timeout, so after dismissing the help popup `getch()` returned -1 instantly every iteration, spinning the main loop at ~100% CPU. Replaced with `timeout(-1)` (block) / `timeout(50)` (restore). Verified empirically: idle 2.0% → 99.5% before fix, 2.0% → 2.0% after.
 - **DRY refresh interval**: main loop's draw trigger used a hardcoded `2` instead of the `REFRESH_INTERVAL` constant, so changing the constant would desync the main loop from the background thread.

@@ -71,7 +71,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.16.3"
+__version__ = "1.16.4"
 __author__ = "Ifor Evans"
 
 
@@ -825,8 +825,9 @@ class TermMon:
                     new_procs = list(self.gpu_processes)
             except KeyboardInterrupt:
                 raise
-            except Exception:
-                pass  # leave new_gpus / new_procs as []
+            except Exception as e:
+                logger.error("Failed to collect GPU data: %s", e)
+                pass
 
             # --- Atomic swap under the lock ---
             with self._stats_lock:
@@ -1657,13 +1658,6 @@ class TermMon:
         self._stats_thread = threading.Thread(target=self._stats_updater_thread, daemon=True)
         self._stats_thread.start()
         
-        # Seed cpu_percent for all processes so first read returns real values
-        for proc in psutil.process_iter():
-            try:
-                proc.cpu_percent(interval=None)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-
         # Initial stats update (wait for first update to complete)
         self._stats_update_event.set()
         time.sleep(0.5)
