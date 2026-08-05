@@ -1682,7 +1682,7 @@ class TermMon:
                     last_refresh = current_time  # Force refresh on resize
                 
                 # Trigger stats update every 2 seconds
-                if current_time - last_refresh >= 2:
+                if current_time - last_refresh >= REFRESH_INTERVAL:
                     self._stats_update_event.set()
                     last_refresh = current_time
                 
