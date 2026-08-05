@@ -71,7 +71,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.16.1"
+__version__ = "1.16.2"
 __author__ = "Ifor Evans"
 
 
@@ -991,7 +991,7 @@ class TermMon:
         popup_attr = curses.color_pair(COLOR_POPUP)  # White on blue
         
         try:
-            stdscr.nodelay(False)  # Block on getch
+            stdscr.timeout(-1)  # Block on getch (run() uses timeout(50))
             
             # Draw colored background box
             for row in range(box_h):
@@ -1042,8 +1042,8 @@ class TermMon:
         except curses.error:
             pass
         
-        # Restore nodelay for main loop
-        stdscr.nodelay(True)
+        # Restore the 50ms timeout the main loop expects
+        stdscr.timeout(50)
     
     def _draw_memory_section(self, stdscr, y: int, x: int, snapshot: Dict[str, Any], bw: int) -> int:
         """
