@@ -8,6 +8,7 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
 
 - **System Memory**: Total, used, available RAM + swap (in GB) with progress bars
 - **CPU Usage**: Overall and per-core real-time utilization
+- **CPU Temperature**: Package temperature (°C) via psutil sensor detection
 - **NVIDIA GPU Monitoring**: VRAM usage, GPU utilization, temperature, power draw
 - **GPU Process Tracking**: Top 5 active GPU compute processes (nvtop-style)
   - Shows PID, user, GPU memory, host memory, and command
@@ -192,6 +193,9 @@ python3 tests/test_pty_layout.py --show 80
 The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.17.0 (2026-08-20)
+- **CPU temperature monitoring**: Added `_get_cpu_temp()` which reads `psutil.sensors_temperatures()` and prefers the `coretemp` sensor (Intel package reading), falling back to `cpu_thermal`, `k10temp`, `zenpower`, then any available sensor group. Returns the max reading or `None` when no sensor is available (most VMs, ARM Macs). Displayed in the CPU section title as `CPU: 16 Cores | Usage: 0.8% | Temp: 47°C`, with three-tier fallback for narrow terminals.
 
 ### v1.16.4 (2026-08-05)
 - **GPU collection error logging**: `_stats_updater_thread` now logs GPU data collection failures via `logger.error()` instead of silently swallowing exceptions. Persistent nvidia-smi failures (driver crash, permission loss) are now visible in logs.

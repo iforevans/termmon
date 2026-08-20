@@ -164,6 +164,14 @@ FAKE_SYSTEM_DATA = {
     'mem_percent': 81.2, 'swap_total_mb': 4400.0, 'swap_used_mb': 2750.0,
     'swap_percent': 62.5, 'cpu_usage': 23.4, 'core_count': 16,
     'per_core_usage': [(i, (i * 7) % 100) for i in range(16)],
+    'cpu_temp': 46.0,
+}
+FAKE_SYSTEM_DATA_NO_TEMP = {
+    'total_mem_gb': 15.4, 'used_mem_gb': 12.5, 'avail_mem_gb': 2.9,
+    'mem_percent': 81.2, 'swap_total_mb': 4400.0, 'swap_used_mb': 2750.0,
+    'swap_percent': 62.5, 'cpu_usage': 23.4, 'core_count': 16,
+    'per_core_usage': [(i, (i * 7) % 100) for i in range(16)],
+    'cpu_temp': None,
 }
 FAKE_GPU_DATA = [{
     'idx': '0', 'name': 'NVIDIA RTX A6000', 'mem_total': 49152.0,
@@ -238,9 +246,11 @@ def check_box_integrity(lines, width):
     return problems
 
 
-def run_size(mod, width, height, gpu_data, scroll=0):
+def run_size(mod, width, height, gpu_data, scroll=0, sysdata=None):
     mock = MockStdscr(height, width)
     app = make_app(mod, gpu_data)
+    if sysdata is not None:
+        app.system_data = dict(sysdata)
     app.process_scroll_x = scroll
     try:
         app.draw(mock)
@@ -304,18 +314,20 @@ def main():
     failures = 0
     checks = 0
 
-    # Full sweep: every width 20..160, a few heights, both GPU backends
+    # Full sweep: every width 20..160, a few heights, both GPU backends,
+    # and both CPU-temp availability states.
     for gpu_label, gpu_data in (("nvidia", FAKE_GPU_DATA), ("uma", FAKE_GPU_DATA_UMA)):
-        for height in (24, 30, 45, 10, 8):
-            for width in range(20, 161):
-                for scroll in (0, 40):
-                    checks += 1
-                    _, problems = run_size(mod, width, height, gpu_data, scroll)
-                    if problems:
-                        failures += 1
-                        print(f"\nFAIL [{gpu_label} {width}x{height} scroll={scroll}]")
-                        for p in problems[:4]:
-                            print(f"   {p}")
+        for temp_label, sysdata in (("temp", FAKE_SYSTEM_DATA), ("notemp", FAKE_SYSTEM_DATA_NO_TEMP)):
+            for height in (24, 30, 45, 10, 8):
+                for width in range(20, 161):
+                    for scroll in (0, 40):
+                        checks += 1
+                        _, problems = run_size(mod, width, height, gpu_data, scroll, sysdata)
+                        if problems:
+                            failures += 1
+                            print(f"\nFAIL [{gpu_label} {temp_label} {width}x{height} scroll={scroll}]")
+                            for p in problems[:4]:
+                                print(f"   {p}")
 
     print(f"\nSwept {checks} render configurations.")
     print(f"Failures: {failures}")

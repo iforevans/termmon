@@ -40,6 +40,7 @@ app.system_data = {
     'mem_percent': 81.2, 'swap_total_mb': 4400.0, 'swap_used_mb': 2750.0,
     'swap_percent': 62.5, 'cpu_usage': 23.4, 'core_count': 16,
     'per_core_usage': [(i, (i * 7) % 100) for i in range(16)],
+    'cpu_temp': 46.0,
 }
 app.gpu_data = [{
     'idx': '0', 'name': 'NVIDIA RTX A6000', 'mem_total': 49152.0,

@@ -14,6 +14,7 @@ RTX 3090/24GB, now running on RTX A6000/48GB.
 Features:
     - System memory monitoring (RAM + swap in GB)
     - Overall and per-core CPU utilization
+    - CPU temperature (°C)
     - NVIDIA GPU monitoring on Linux (VRAM, utilization, temperature, power)
     - Apple Silicon GPU monitoring on macOS (utilization, power, UMA)
     - GPU process tracking (top 5 processes by memory usage)
@@ -71,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.16.4"
+__version__ = "1.17.0"
 __author__ = "Ifor Evans"
 
 
@@ -193,7 +194,33 @@ class TermMon:
     def _get_core_count() -> int:
         """Read CPU core count (cross-platform)."""
         return psutil.cpu_count() or 0
-        
+
+    @staticmethod
+    def _get_cpu_temp() -> Optional[float]:
+        """Read the CPU temperature in °C (best effort, cross-platform).
+
+        Prefers the 'coretemp' sensor (the CPU package reading on Intel);
+        falls back to the first sensor group psutil reports. Returns None
+        when no temperature is available (most VMs, ARM Macs, etc.).
+        """
+        try:
+            temps = psutil.sensors_temperatures()
+        except Exception:
+            return None
+        if not temps:
+            return None
+        groups = ['coretemp', 'cpu_thermal', 'k10temp', 'zenpower']
+        for group in groups:
+            if group in temps:
+                values = [t.current for t in temps[group] if t.current is not None and t.current > 0]
+                if values:
+                    return max(values)
+        for sensors in temps.values():
+            values = [t.current for t in sensors if t.current is not None and t.current > 0]
+            if values:
+                return max(values)
+        return None
+
     # ------------------------------------------------------------------ #
     #  GPU backends — auto-detected at init, swappable for testing       #
     # ------------------------------------------------------------------ #
@@ -809,6 +836,7 @@ class TermMon:
                     'cpu_usage': sum(per_core_raw) / max(len(per_core_raw), 1),
                     'core_count': self.core_count,
                     'per_core_usage': per_core_usage,
+                    'cpu_temp': self._get_cpu_temp(),
                 }
             except KeyboardInterrupt:
                 raise
@@ -1156,13 +1184,21 @@ class TermMon:
         core_count = sysdata.get('core_count', 0)
         cpu_pct = sysdata.get('cpu_usage', 0)
 
+        cpu_temp = sysdata.get('cpu_temp')
+
         # Box header. Overall CPU usage lives in the title to save one row on
         # short iPad/mobile SSH terminals.
         self._safe_addstr(stdscr, y, x, "┌" + "─" * (bw - 2) + "┐", 0, right_edge)
         y += 1
-        cpu_title = f" CPU ({core_count} cores, overall {cpu_pct:5.1f}%)"
+
+        if cpu_temp is not None:
+            cpu_title = f" CPU: {core_count} Cores | Usage: {cpu_pct:.1f}% | Temp: {cpu_temp:.0f}°C"
+        else:
+            cpu_title = f" CPU: {core_count} Cores | Usage: {cpu_pct:.1f}%"
         if len(cpu_title) > bw - 2:
-            cpu_title = f" CPU {cpu_pct:5.1f}%"
+            cpu_title = f" CPU: {core_count} Cores | {cpu_pct:.1f}%"
+        if len(cpu_title) > bw - 2:
+            cpu_title = f" CPU {cpu_pct:.1f}%"
         self._safe_addstr(stdscr, y, x, ("│" + cpu_title).ljust(bw - 1)[:bw - 1] + "│", 0, right_edge)
         y += 1
         self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
