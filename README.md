@@ -68,7 +68,7 @@ The layout is **fully responsive** — it reflows to whatever size your terminal
 At 80 columns, Mem/Swap sit side by side, cores run in two columns, and GPU Util/VRAM share a row:
 
 ```
- termmon 1.16.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+ termmon 1.18.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                              │
  │────────────────────────────────────────────────────────────────────────────│
@@ -83,11 +83,10 @@ At 80 columns, Mem/Swap sit side by side, cores run in two columns, and GPU Util
  │ Core 3: █████░░░░░░░░░░░░░░░░  24.5%  Core 7: ░░░░░░░░░░░░░░░░░░░░░   0.0% │
  └────────────────────────────────────────────────────────────────────────────┘
  ┌────────────────────────────────────────────────────────────────────────────┐
- │ NVIDIA GPU(s)                                                              │
+ │ GPUs                                                                       │
  │────────────────────────────────────────────────────────────────────────────│
- │ GPU 0: NVIDIA RTX A6000                      Temp:    59°C  Power:  110.0W │
- │ Util:████████████████░░░░   80.0%                                          │
- │ VRAM:█████████████████░░░  42.8GB/48.0G  89.1%                             │
+ │ GPU 0: NVIDIA RTX A6000 | Util: 80.0% | Temp: 59°C | Power: 110.0W         │
+ │ Util:████████████████░░░░   80.0%  VRAM:█████████████████░░░  42.8GB/48.0G │
  └────────────────────────────────────────────────────────────────────────────┘
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ GPU PROCESSES  ←/→ scroll 0                                                │
@@ -99,10 +98,10 @@ At 80 columns, Mem/Swap sit side by side, cores run in two columns, and GPU Util
  Refresh: 2s | q:quit r:refresh h:help ←/→:process scroll
 ```
 
-Shrink to 50 columns and the box narrows with the terminal, bars shorten, Mem/Swap stack, GPU name splits from temp/power, and Util/VRAM take their own rows — no wrapping, no overwritten content:
+Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GPU title drops segments, and Util/VRAM take their own rows — no wrapping, no overwritten content:
 
 ```
- termmon 1.16.0 | 14:32:07
+ termmon 1.18.0 | 14:32:07
  ┌──────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                │
  │──────────────────────────────────────────────│
@@ -118,10 +117,9 @@ Shrink to 50 columns and the box narrows with the terminal, bars shorten, Mem/Sw
  │ Core 3: █░░░░░  24.5%  Core 7: ░░░░░░   0.0% │
  └──────────────────────────────────────────────┘
  ┌──────────────────────────────────────────────┐
- │ NVIDIA GPU(s)                                │
+ │ GPUs                                         │
  │──────────────────────────────────────────────│
- │ GPU 0: NVIDIA RTX A6000                      │
- │ Temp:    59°C  Power:  110.0W                │
+ │ GPU 0: NVIDIA RTX A6000 | Util: 80.0%        │
  │ Util:████████████████░░░░   80.0%            │
  │ VRAM:███████████████░░  42.8GB/48.0G  89.1%  │
  └──────────────────────────────────────────────┘
@@ -193,6 +191,10 @@ python3 tests/test_pty_layout.py --show 80
 The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.18.0 (2026-08-27)
+- **Consistent GPU section header**: the GPU section title is now a plain `GPUs` label (backend name when no data), matching the clean style of the other section titles. Per-GPU stats moved from the right-aligned `Temp: ... Power: ...` block onto each GPU's own detail line: `GPU 0: NVIDIA RTX A6000 | Util: 80.0% | Temp: 59°C | Power: 110.0W`, with segments dropped right-to-left (Power, then Temp) for narrow boxes. Cuts one row per GPU at narrow widths and removes the duplicated name between the title and the detail line.
+- **Removed `GPU_HEADER_TWO_COL_MIN` breakpoint**: no longer needed now that temp/power live inline on the GPU detail line.
 
 ### v1.17.0 (2026-08-20)
 - **CPU temperature monitoring**: Added `_get_cpu_temp()` which reads `psutil.sensors_temperatures()` and prefers the `coretemp` sensor (Intel package reading), falling back to `cpu_thermal`, `k10temp`, `zenpower`, then any available sensor group. Returns the max reading or `None` when no sensor is available (most VMs, ARM Macs). Displayed in the CPU section title as `CPU: 16 Cores | Usage: 0.8% | Temp: 47°C`, with three-tier fallback for narrow terminals.
@@ -438,7 +440,7 @@ The mock suite asserts no write lands outside the terminal grid and that box edg
 
 ### v1.5.0 (2026-04-20)
 - **GPU display optimization**: Two-column compact layout
-  - Row 1: GPU name (left) + Temp/Power (right) on same line
+  - Row 1: GPU name (summary stats moved to the section title)
   - Row 2: VRAM bar (left) + Util bar (right) on same line
   - Cuts GPU section from 4 rows down to 2 rows
   - Much more compact for multi-GPU systems

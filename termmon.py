@@ -72,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.17.0"
+__version__ = "1.18.0"
 __author__ = "Ifor Evans"
 
 
@@ -87,7 +87,6 @@ REFRESH_INTERVAL = 2   # Seconds between auto-refreshes
 # string lengths — see _draw_*_section for the per-section overhead arithmetic.
 MEM_TWO_COL_MIN = 70   # Mem + Swap side by side
 GPU_TWO_COL_MIN = 84   # Util + VRAM side by side
-GPU_HEADER_TWO_COL_MIN = 62  # GPU name + temp/power on one row
 
 # Color pair IDs
 COLOR_TITLE = 1         # White - title and footer
@@ -1302,13 +1301,16 @@ class TermMon:
 
         return y
     
-    def _gpu_section_title(self) -> str:
-        """Return a dynamic GPU section title based on the active backend."""
-        if self._gpu_backend == 'nvidia':
-            return 'NVIDIA GPU(s)'
-        if self._gpu_backend == 'apple':
-            return 'Apple GPU'
-        return 'GPU'
+    def _gpu_section_title(self, gpu_data: List[Dict[str, Any]]) -> str:
+        """Generic GPU section title; per-GPU stats live on each GPU's
+        own detail line."""
+        if not gpu_data:
+            if self._gpu_backend == 'nvidia':
+                return 'NVIDIA GPU(s)'
+            if self._gpu_backend == 'apple':
+                return 'Apple GPU'
+            return 'GPU'
+        return 'GPUs'
 
     def _gpu_no_data_message(self) -> str:
         """Return a helpful 'no data' message for the active backend."""
@@ -1329,12 +1331,13 @@ class TermMon:
         right_edge = x + bw
         border_x = x + bw - 1
 
-        # Box header
+        # Box header (per-GPU stats live on each GPU's detail line)
         self._safe_addstr(stdscr, y, x, "┌" + "─" * (bw - 2) + "┐", 0, right_edge)
         y += 1
+        title = self._gpu_section_title(gpu_data)
         self._safe_addstr(
             stdscr, y, x,
-            ("│ " + self._gpu_section_title()).ljust(bw - 1)[:bw - 1] + "│", 0, right_edge,
+            ("│ " + title).ljust(bw - 1)[:bw - 1] + "│", 0, right_edge,
         )
         y += 1
         self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
@@ -1353,38 +1356,29 @@ class TermMon:
                 is_uma = gpu.get('is_uma', False)
                 gpu_cores = gpu.get('gpu_cores', 0)
 
-                # --- Row 1: GPU name (left) | Temp + Power (right) ---
+                # --- Row 1: per-GPU header (name | Util | Temp | Power) ---
                 if is_uma:
                     core_info = f" ({gpu_cores}-core GPU)" if gpu_cores else ""
                     gpu_name = f"{gpu['name']}{core_info}"
                 else:
                     gpu_name = f"GPU {gpu['idx']}: {gpu['name']}"
 
+                segments = [gpu_name, f"Util: {gpu['gpu_util']:.1f}%"]
                 if gpu['temp'] > 0:
-                    temp_power = f"Temp: {gpu['temp']:5.0f}°C  Power: {gpu['power']:6.1f}W"
-                else:
-                    temp_power = f"Power: {gpu['power']:6.1f}W"
+                    segments.append(f"Temp: {gpu['temp']:.0f}°C")
+                if gpu['power'] > 0:
+                    segments.append(f"Power: {gpu['power']:.1f}W")
+                gpu_header = " | ".join(segments)
 
-                # Blank the row, then place name left and temp/power right.
+                content_width = bw - 3  # right border + left border + leading space
+                # Drop segments (then shorten the name) until the header fits.
+                while len(segments) > 1 and len(" | ".join(segments)) > content_width:
+                    segments.pop()
+                gpu_header = " | ".join(segments)
+                if len(gpu_header) > content_width:
+                    gpu_header = gpu_header[:content_width]
                 self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
-
-                content_width = bw - 4  # borders + 1-space padding each side
-                if bw >= GPU_HEADER_TWO_COL_MIN and len(temp_power) + 2 < content_width:
-                    # Right-align temp/power against the inner right edge.
-                    name_room = content_width - len(temp_power) - 2
-                    self._safe_addstr(stdscr, y, x, "│ " + gpu_name[:name_room], 0, border_x)
-                    self._safe_addstr(
-                        stdscr, y, border_x - 1 - len(temp_power), temp_power, 0, border_x,
-                    )
-                else:
-                    # Too narrow for both: name on this row, temp/power below.
-                    self._safe_addstr(stdscr, y, x, "│ " + gpu_name[:content_width], 0, border_x)
-                    self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
-                    y += 1
-                    if y >= height - 3:
-                        break
-                    self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
-                    self._safe_addstr(stdscr, y, x, "│ " + temp_power[:content_width], 0, border_x)
+                self._safe_addstr(stdscr, y, x, "│ " + gpu_header, 0, border_x)
 
                 self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
                 y += 1
