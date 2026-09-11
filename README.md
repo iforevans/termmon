@@ -6,7 +6,7 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
 
 ## Features
 
-- **System Memory**: Total, used, available RAM + swap (in GB) with progress bars
+- **System Memory**: One stacked RAM bar with non-overlapping Used / Cache / Free segments (GiB legend inline), so the ~90 GB hiding in buffers/file-cache is visible; Total + the kernel's Available shown separately, plus a swap bar
 - **CPU Usage**: Overall and per-core real-time utilization
 - **CPU Temperature**: Package temperature (°C) via psutil sensor detection
 - **NVIDIA GPU Monitoring**: VRAM usage, GPU utilization, temperature, power draw
@@ -65,14 +65,16 @@ Simply run `termmon` and watch your system resources in real-time.
 
 The layout is **fully responsive** — it reflows to whatever size your terminal is, nvtop-style. Both mockups below are real rendered output.
 
-At 80 columns, Mem/Swap sit side by side, cores run in two columns, and GPU Util/VRAM share a row:
+At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, cores run in two columns, and GPU Util/VRAM share a row:
 
 ```
- termmon 1.18.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+ termmon 1.19.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                              │
  │────────────────────────────────────────────────────────────────────────────│
- │ Mem: ████████░░  12.5GB/15.4G  81.2%  Swap:██████░░░░  2.7/ 4.3GB  62.5%   │
+ │ Mem: ████████████████ Used:  12.5 GiB | Cache:   2.4 GiB | Free:   0.5 GiB │
+ │ Total:   15.4 GiB | Available:    2.9 GiB                                  │
+ │ Swap:████████████░░░░░░░░  2.7/ 4.3GB  62.5%                               │
  └────────────────────────────────────────────────────────────────────────────┘
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ CPU (8 cores, overall  15.1%)                                              │
@@ -101,12 +103,13 @@ At 80 columns, Mem/Swap sit side by side, cores run in two columns, and GPU Util
 Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GPU title drops segments, and Util/VRAM take their own rows — no wrapping, no overwritten content:
 
 ```
- termmon 1.18.0 | 14:32:07
+ termmon 1.19.0 | 14:32:07
  ┌──────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                │
  │──────────────────────────────────────────────│
- │ Mem: █████████████░░░░  12.5GB/15.4G  81.2%  │
- │ Swap:██████████░░░░░░░  2.7/ 4.3GB  62.5%    │
+ │ Mem: █████████████ U 12.5 | C  2.4 | F  0.5G │
+ │ Total:   15.4 GiB | Available:    2.9 GiB    │
+ │ Swap:███████████░░░░░░░░  2.7/ 4.3GB  62.5%  │
  └──────────────────────────────────────────────┘
  ┌──────────────────────────────────────────────┐
  │ CPU (8 cores, overall  15.1%)                │
@@ -135,9 +138,10 @@ Below ~24 columns termmon shows a "Terminal too small" notice rather than render
 
 ## Color Scheme
 
-- 🟢 **Green**: System memory usage
+- 🟢 **Green**: Used RAM (stacked bar segment) / system memory
+- 🔵 **Cyan**: RAM held as Cache (buffers + page cache + reclaimable slab; includes tmpfs/shared pages, so not fully reclaimable) / CPU usage
+- ⚪ **White**: Free RAM (stacked bar segment)
 - 🟡 **Yellow**: Swap usage
-- 🔵 **Cyan**: CPU usage
 - 🟣 **Magenta**: VRAM usage
 - 🔴 **Red**: Error messages
 
@@ -166,7 +170,7 @@ Below ~24 columns termmon shows a "Terminal too small" notice rather than render
 - **GPU Detection**: `nvidia-smi` on Linux; `macmon` (preferred), `socpwrbud`, or `powermetrics` + `system_profiler` on macOS
 - **macOS GPU**: Three-tier fallback — `macmon` (actively maintained, no sudo), `socpwrbud` (archived, no sudo), `powermetrics` (requires sudo on macOS 13+)
 - **CPU Stats**: psutil (cross-platform, replaces `/proc/stat`)
-- **Memory Stats**: psutil (cross-platform, replaces `/proc/meminfo`)
+- **Memory Stats**: Linux reads `/proc/meminfo` directly — `Cache = Buffers + Cached + SReclaimable`, `Used = Total − Free − Cache` (so Used + Cache + Free == Total); `MemAvailable` is shown beside the bar, never as a segment. Other platforms use psutil (its Linux `.cached` already folds in SReclaimable, so mixing both would double-count)
 - **Process Info**: psutil.Process() (cross-platform, replaces `/proc/[pid]`)
 - **Refresh Rate**: 2 seconds (configurable in source)
 - **Layout**: Adaptive box width (`min(120, terminal_width - 2)`), computed bar widths, and per-section two-column/single-column breakpoints. All drawing goes through a single bounds-clipping `_safe_addstr()` helper
@@ -174,11 +178,14 @@ Below ~24 columns termmon shows a "Terminal too small" notice rather than render
 
 ## Testing
 
-Two harnesses cover the layout; both must be clean after any change to the draw path.
+Three harnesses cover the memory bar and layout; all must be clean after any change to the draw path.
 
 ```bash
 # MockStdscr sweep — 2,820 configs (widths 20-160 x 5 heights x NVIDIA/UMA x 2 scroll offsets)
 python3 tests/test_responsive_layout.py
+
+# Stacked Used/Cache/Free accounting, largest-remainder rounding, live meminfo
+python3 tests/test_mem_stacking.py
 
 # Render specific widths for visual inspection
 python3 tests/test_responsive_layout.py --render 80,50,30
@@ -191,6 +198,11 @@ python3 tests/test_pty_layout.py --show 80
 The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.19.0 (2026-09-11)
+- **Stacked Used/Cache/Free RAM bar**: the single system-memory bar is now one stacked bar of three non-overlapping, colour-coded segments — 🟢 Used (green), 🔵 Cache (cyan), ⚪ Free (white) — with a colour-keyed legend giving each amount in GiB (inline beside the bar when it fits, otherwise on its own row), plus a `Total: … | Available: …` row and the swap bar. The point: memory held for mmap/file caching is now visible. A llama-server host could previously headline ~18 GiB "used" while ~90 GiB sat in buffers/cache.
+- **Accounting from `/proc/meminfo` directly (Linux)**: `Total=MemTotal`, `Free=MemFree`, `Cache=Buffers+Cached+SReclaimable`, `Used=Total−Free−Cache` (values in the file's "kB" label are KiB, 1024 bytes each), so `Used + Cache + Free == Total` exactly. `Available=MemAvailable` is the kernel's overlapping estimate — displayed separately, never a fourth segment; `Total − Available` is deliberately *not* Used because it would overlap Cache. psutil is bypassed on Linux (its `virtual_memory().cached` already folds SReclaimable in — reusing it here would double-count); macOS/psutil fallback forces the same invariant with Cache as the remainder. Missing optional fields and transient `/proc` read failures degrade to sane zeros/fallbacks instead of crashing the refresh loop; memory collection is isolated from swap/CPU collection.
+- **Exact-fit segments**: new `_stacked_segment_widths()` uses largest-remainder (Hare quota) rounding so segment widths always sum to exactly the bar width — no gap, no overlap — at every terminal size. Legend/summary/swap rows degrade by width (four label templates) and by height (drop swap, then summary, then legend on very short terminals); `MEM_TWO_COL_MIN` retired. New tests: `tests/test_mem_stacking.py`.
 
 ### v1.18.0 (2026-08-27)
 - **Consistent GPU section header**: the GPU section title is now a plain `GPUs` label (backend name when no data), matching the clean style of the other section titles. Per-GPU stats moved from the right-aligned `Temp: ... Power: ...` block onto each GPU's own detail line: `GPU 0: NVIDIA RTX A6000 | Util: 80.0% | Temp: 59°C | Power: 110.0W`, with segments dropped right-to-left (Power, then Temp) for narrow boxes. Cuts one row per GPU at narrow widths and removes the duplicated name between the title and the detail line.

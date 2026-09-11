@@ -36,7 +36,9 @@ app = termmon.TermMon()
 # Freeze deterministic data and stop the background collector from
 # overwriting it, so the screen is reproducible.
 app.system_data = {
-    'total_mem_gb': 15.4, 'used_mem_gb': 12.5, 'avail_mem_gb': 2.9,
+    'total_mem_gb': 15.4, 'used_mem_gb': 12.5,
+    'cache_mem_gb': 2.4, 'free_mem_gb': 0.5,
+    'avail_mem_gb': 2.9,
     'mem_percent': 81.2, 'swap_total_mb': 4400.0, 'swap_used_mb': 2750.0,
     'swap_percent': 62.5, 'cpu_usage': 23.4, 'core_count': 16,
     'per_core_usage': [(i, (i * 7) % 100) for i in range(16)],

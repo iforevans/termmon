@@ -12,7 +12,7 @@ and GPU/VRAM usage from one window while testing local AI models on an
 RTX 3090/24GB, now running on RTX A6000/48GB.
 
 Features:
-    - System memory monitoring (RAM + swap in GB)
+    - System memory monitoring: stacked Used/Cache/Free RAM bar (GiB) + swap
     - Overall and per-core CPU utilization
     - CPU temperature (°C)
     - NVIDIA GPU monitoring on Linux (VRAM, utilization, temperature, power)
@@ -72,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.18.0"
+__version__ = "1.19.0"
 __author__ = "Ifor Evans"
 
 
@@ -85,16 +85,17 @@ REFRESH_INTERVAL = 2   # Seconds between auto-refreshes
 
 # Responsive breakpoints (box width in columns). Derived from measured format
 # string lengths — see _draw_*_section for the per-section overhead arithmetic.
-MEM_TWO_COL_MIN = 70   # Mem + Swap side by side
 GPU_TWO_COL_MIN = 84   # Util + VRAM side by side
 
 # Color pair IDs
 COLOR_TITLE = 1         # White - title and footer
-COLOR_MEMORY = 2        # Green - RAM usage bar
+COLOR_MEMORY = 2        # Green - RAM usage bar ("Used" segment of the stack)
 COLOR_SWAP = 3          # Yellow - swap usage bar
 COLOR_CPU = 4           # Cyan - CPU usage bar
 COLOR_VRAM = 5          # Magenta - VRAM usage bar
 COLOR_POPUP = 6         # White on blue - help popup
+COLOR_MEM_CACHE = 7     # Cyan - "Cache" segment of the stacked RAM bar
+COLOR_MEM_FREE = 8      # White - "Free" segment of the stacked RAM bar
 
 # NVIDIA GPU query fields (must match nvidia-smi output order)
 GPU_QUERY_FIELDS = "index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw"
@@ -820,15 +821,10 @@ class TermMon:
 
             # --- system stats (collected inline in background thread) ---
             try:
-                vm = psutil.virtual_memory()
                 swap = psutil.swap_memory()
                 per_core_raw = psutil.cpu_percent(percpu=True)
                 per_core_usage = list(enumerate(per_core_raw))
                 new_sysdata = {
-                    'total_mem_gb': vm.total / 1024**3,
-                    'used_mem_gb': vm.used / 1024**3,
-                    'avail_mem_gb': vm.available / 1024**3,
-                    'mem_percent': vm.percent,
                     'swap_total_mb': swap.total / 1024**2,
                     'swap_used_mb': swap.used / 1024**2,
                     'swap_percent': swap.percent,
@@ -842,6 +838,16 @@ class TermMon:
             except Exception as e:
                 logger.error("Failed to collect system stats: %s", e)
                 new_sysdata = {}
+
+            # --- memory stats, collected separately so a transient
+            #     /proc/meminfo or psutil hiccup cannot blank the swap/CPU
+            #     numbers gathered above nor disturb the refresh loop. ---
+            try:
+                new_sysdata.update(self._collect_memory_stats())
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                logger.error("Failed to collect memory stats: %s", e)
 
             # --- GPU stats + processes (parallel) ---
             try:
@@ -865,6 +871,118 @@ class TermMon:
     def update_stats(self) -> None:
         """Signal background thread to update stats (non-blocking)."""
         self._stats_update_event.set()
+
+    # ------------------------------------------------------------------ #
+    #      System memory accounting (stacked Used / Cache / Free bar)     #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _parse_meminfo_kib(text: str) -> Dict[str, int]:
+        """
+        Parse /proc/meminfo content into {field: value_in_KiB}.
+
+        The "kB" unit label in /proc/meminfo is a misnomer for kibibytes,
+        so 1 kB == 1024 bytes; values are kept as integer KiB.
+        """
+        fields: Dict[str, int] = {}
+        for line in text.splitlines():
+            name, sep, rest = line.partition(':')
+            if not sep:
+                continue
+            parts = rest.split()
+            if parts and parts[0].isdigit():
+                fields[name] = int(parts[0])
+        return fields
+
+    @staticmethod
+    def _read_meminfo_kib() -> Optional[Dict[str, int]]:
+        """Read and parse /proc/meminfo; None when missing/unreadable/partial."""
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                fields = TermMon._parse_meminfo_kib(f.read())
+        except OSError as e:
+            logger.debug("Could not read /proc/meminfo: %s", e)
+            return None
+        if 'MemTotal' not in fields:
+            logger.debug("/proc/meminfo read returned no MemTotal; ignoring")
+            return None
+        return fields
+
+    @staticmethod
+    def _account_meminfo_gib(fields: Dict[str, int]) -> Dict[str, float]:
+        """
+        Turn raw meminfo KiB counters into the stacked-bar categories (GiB).
+
+          Total = MemTotal
+          Free  = MemFree
+          Cache = Buffers + Cached + SReclaimable
+          Used  = Total - Free - Cache
+          Avail = MemAvailable
+
+        so Used + Cache + Free == Total exactly. Cache includes reclaimable
+        slab AND tmpfs/shared pages, so it must not be presented as entirely
+        reclaimable; MemAvailable is the kernel's own estimate of memory
+        usable by applications and overlaps the bar's categories — it is
+        reported separately and never as a fourth segment.
+
+        psutil is deliberately bypassed on Linux: its
+        virtual_memory().cached already folds SReclaimable in (adding it
+        again would double-count), and its "used" is derived differently.
+        Missing optional fields (old kernels, exotic configs) degrade to 0
+        or a documented estimate instead of raising.
+        """
+        total = fields.get('MemTotal', 0)
+        free = fields.get('MemFree', 0)
+        cache = (fields.get('Buffers', 0)
+                 + fields.get('Cached', 0)
+                 + fields.get('SReclaimable', 0))
+        avail = fields.get('MemAvailable')
+        if avail is None:  # pre-3.14 kernels: upper-bound estimate
+            avail = free + cache
+        # Clamp hard so Used can never go negative (counter skew mid-read).
+        free = max(0, min(free, total))
+        cache = max(0, min(cache, total - free))
+        used = total - free - cache
+        avail = max(0, min(avail, total))
+        kib_per_gib = 1024 ** 2
+        return {
+            'total_mem_gb': total / kib_per_gib,
+            'used_mem_gb': used / kib_per_gib,
+            'cache_mem_gb': cache / kib_per_gib,
+            'free_mem_gb': free / kib_per_gib,
+            'avail_mem_gb': avail / kib_per_gib,
+            'mem_percent': (used / total * 100.0) if total else 0.0,
+        }
+
+    @classmethod
+    def _collect_memory_stats(cls) -> Dict[str, float]:
+        """
+        Gather the system-memory numbers for one refresh cycle.
+
+        Linux reads /proc/meminfo directly (see _account_meminfo_gib); if
+        that transiently fails, fall through to psutil rather than blanking
+        the panel. Other platforms (macOS) use psutil: Used/Free/Available
+        come straight from it and Cache absorbs the remainder (inactive /
+        purgeable pages) so Used + Cache + Free == Total holds there too.
+        """
+        if _IS_LINUX:
+            fields = cls._read_meminfo_kib()
+            if fields is not None:
+                return cls._account_meminfo_gib(fields)
+        vm = psutil.virtual_memory()
+        total = vm.total
+        used = max(0, min(vm.used, total))
+        free = max(0, min(vm.free, total - used))
+        cache = total - used - free
+        avail = max(0, min(vm.available, total))
+        return {
+            'total_mem_gb': total / 1024 ** 3,
+            'used_mem_gb': used / 1024 ** 3,
+            'cache_mem_gb': cache / 1024 ** 3,
+            'free_mem_gb': free / 1024 ** 3,
+            'avail_mem_gb': avail / 1024 ** 3,
+            'mem_percent': (used / total * 100.0) if total else 0.0,
+        }
     
     def _get_gpu_data_parallel(self) -> None:
         """Run get_gpu_stats() and get_gpu_processes() concurrently."""
@@ -989,7 +1107,88 @@ class TermMon:
             )
         if empty > 0:
             self._safe_addstr(stdscr, y, x + filled, '░' * empty, 0, max_x)
-    
+
+    @staticmethod
+    def _mem_segments(sysdata: Dict[str, Any]) -> Tuple[float, float, float, float]:
+        """
+        Return (used, cache, free, total) GiB for the stacked RAM bar.
+
+        Defensive against missing/partial keys: the Free segment absorbs any
+        residual so Used + Cache + Free == Total always holds, and the bar
+        never draws a gap or an overlap even on stale or legacy data.
+        """
+        try:
+            total = float(sysdata.get('total_mem_gb', 0) or 0)
+            used = float(sysdata.get('used_mem_gb', 0) or 0)
+            cache = float(sysdata.get('cache_mem_gb', 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0, 0.0, 0.0, 0.0
+        if total <= 0:
+            return 0.0, 0.0, 0.0, 0.0
+        used = min(max(0.0, used), total)
+        cache = min(max(0.0, cache), total - used)
+        free = max(0.0, total - used - cache)
+        return used, cache, free, total
+
+    @staticmethod
+    def _stacked_segment_widths(values: Tuple[float, ...], width: int) -> List[int]:
+        """
+        Split `width` columns between stacked segments, proportionally.
+
+        Largest-remainder (Hare quota) rounding: every segment gets at least
+        its floor share and the leftover columns go to the largest fractional
+        parts (ties to the earlier segment), so the returned widths always
+        sum to exactly `width` — no gap, no overlap. All-zero/negative input
+        returns all-zero widths; the caller draws the bar empty.
+        """
+        if width <= 0 or not values:
+            return [0] * len(values)
+        total = sum(v for v in values if v > 0)
+        if total <= 0:
+            return [0] * len(values)
+        shares = [max(0.0, v) / total * width for v in values]
+        widths = [int(s) for s in shares]
+        leftover = width - sum(widths)
+        by_frac = sorted(
+            range(len(shares)),
+            key=lambda i: (shares[i] - widths[i], -i),
+            reverse=True,
+        )
+        for i in by_frac[:leftover]:
+            widths[i] += 1
+        return widths
+
+    def draw_stacked_bar(
+            self, stdscr, y: int, x: int, values: Tuple[float, ...],
+            colors: Tuple[int, ...], width: int, max_x: int = 0,
+        ) -> None:
+        """
+        Draw one bar as adjacent, non-overlapping colour-coded segments.
+
+        Args:
+            stdscr: Curses window
+            y, x: Position
+            values: Per-segment magnitudes (same unit; ratios only matter)
+            colors: Curses color pair ID per segment (same length/order)
+            width: Exact total bar width in columns
+            max_x: Optional exclusive right boundary (box border column)
+
+        Segment widths are rounded so they sum to exactly `width`; any
+        leftover (no total data at all) is drawn as empty blocks, matching
+        draw_bar's look for a bar with nothing to show.
+        """
+        widths = self._stacked_segment_widths(values, width)
+        cx = x
+        for seg_w, color in zip(widths, colors):
+            if seg_w > 0:
+                self._safe_addstr(
+                    stdscr, y, cx, '█' * seg_w,
+                    curses.color_pair(color) | curses.A_BOLD, max_x,
+                )
+                cx += seg_w
+        if cx < x + width:  # all-zero values: draw the whole bar empty
+            self._safe_addstr(stdscr, y, cx, '░' * (x + width - cx), 0, max_x)
+
     def _show_help(self, stdscr) -> None:
         """Show a styled help popup (white-on-blue, blocking until key press)."""
         # Draw the dashboard underneath first
@@ -1073,14 +1272,26 @@ class TermMon:
         # Restore the 50ms timeout the main loop expects
         stdscr.timeout(50)
     
-    def _draw_memory_section(self, stdscr, y: int, x: int, snapshot: Dict[str, Any], bw: int) -> int:
+    def _draw_memory_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int) -> int:
         """
-        Draw the system memory monitoring section (Mem and Swap in 2 columns).
+        Draw the system memory monitoring section.
+
+        RAM is ONE stacked bar of three non-overlapping segments — Used
+        (green), Cache (cyan) and Free (white) — sized so Used + Cache +
+        Free == Total, making the memory held for mmap/file caching visible
+        instead of hidden inside "used". A colour-keyed legend gives each
+        amount in GiB (inline beside the bar when it fits, else on its own
+        row). Total and the kernel's Available estimate get their own row:
+        Available spans the bar's categories, so it is never a fourth
+        segment. Swap keeps its own row. Rows degrade by width (shorter
+        templates) and by height (swap row first, then summary, then
+        legend) so nothing ever clips mid-number or runs off-screen.
 
         Args:
             stdscr: Curses window
             y: Starting row position
             x: Column position
+            height: Terminal height (for bounds checking)
             snapshot: Thread-safe data snapshot
             bw: Box width for this frame
 
@@ -1099,63 +1310,126 @@ class TermMon:
         self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
         y += 1
 
-        mem_pct = sysdata.get('mem_percent', 0)
-        used_gb = sysdata.get('used_mem_gb', 0)
-        total_gb = sysdata.get('total_mem_gb', 0)
+        used_gb, cache_gb, free_gb, total_gb = self._mem_segments(sysdata)
+        avail_gb = sysdata.get('avail_mem_gb', 0)
         swap_pct = sysdata.get('swap_percent', 0)
         swap_used_gb = sysdata.get('swap_used_mb', 0) / 1024
         swap_total_gb = sysdata.get('swap_total_mb', 0) / 1024
 
-        mem_info = f" {used_gb:5.1f}GB/{total_gb:4.1f}G {mem_pct:5.1f}%"
-        swap_info = f" {swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB {swap_pct:5.1f}%"
+        seg_colors = (COLOR_MEMORY, COLOR_MEM_CACHE, COLOR_MEM_FREE)
 
-        # Overhead = "│ Mem: "(7) + info + gap(2) + "Swap:"(5) + info + "│"(1)
-        two_col = bw >= MEM_TWO_COL_MIN
-        gap = 2
-
-        if two_col:
-            overhead = 7 + len(mem_info) + gap + 5 + len(swap_info) + 1
-            bar_w = self._bar_width(bw, True, overhead)
-
+        def blank_row(row_y: int) -> None:
             # Blank the row first so nothing from a previous frame survives.
-            self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
+            self._safe_addstr(stdscr, row_y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
 
+        def draw_parts(row_y: int, start_x: int, parts: List[Tuple[str, int]]) -> None:
+            """Write [(text, color_pair)] sequentially; colour keys the legend."""
+            cx = start_x
+            for text, color in parts:
+                attr = curses.color_pair(color) | curses.A_BOLD if color else 0
+                self._safe_addstr(stdscr, row_y, cx, text, attr, border_x)
+                cx += len(text)
+
+        # Legend candidates, longest first; each becomes colour-keyed parts.
+        legend_specs = (
+            lambda: (f"Used: {used_gb:5.1f} GiB", f"Cache: {cache_gb:5.1f} GiB", f"Free: {free_gb:5.1f} GiB"),
+            lambda: (f"Used {used_gb:5.1f}G", f"Cache {cache_gb:5.1f}G", f"Free {free_gb:5.1f}G"),
+            lambda: (f"U {used_gb:4.1f}", f"C {cache_gb:4.1f}", f"F {free_gb:4.1f}G"),
+            lambda: (f"U{used_gb:3.1f}", f"C{cache_gb:3.1f}", f"F{free_gb:3.1f}"),
+        )
+
+        def legend_parts(spec) -> List[Tuple[str, int]]:
+            parts: List[Tuple[str, int]] = []
+            for i, text in enumerate(spec()):
+                if i:
+                    parts.append((" | " if spec is not legend_specs[-1] else "  ", 0))
+                parts.append((text, seg_colors[i]))
+            return parts
+
+        def parts_len(parts: List[Tuple[str, int]]) -> int:
+            return sum(len(text) for text, _ in parts)
+
+        # Mem bar row: the stacked Used/Cache/Free bar; the legend rides
+        # inline next to a still-usable bar, otherwise it takes its own row.
+        inline: Optional[List[Tuple[str, int]]] = None
+        legend_row: Optional[List[Tuple[str, int]]] = None
+        for spec in legend_specs:
+            parts = legend_parts(spec)
+            if bw - 2 - 7 - 1 - parts_len(parts) >= MIN_BAR_WIDTH:
+                inline = parts
+                break
+        if inline is not None:
+            bar_w = self._bar_width(bw, False, 7 + 1 + parts_len(inline))
+        else:
+            bar_w = self._bar_width(bw, False, 7 + 1)
+            for spec in legend_specs:
+                parts = legend_parts(spec)
+                if parts_len(parts) <= bw - 4:
+                    legend_row = parts
+                    break
+            legend_row = legend_row or legend_parts(legend_specs[-1])
+
+        if y <= height - 2:  # bar row — skipped only on absurdly short terminals
+            blank_row(y)
             self._safe_addstr(stdscr, y, x, "│ Mem:", 0, right_edge)
-            self.draw_bar(stdscr, y, x + 7, mem_pct, bar_w, COLOR_MEMORY, border_x)
-            self._safe_addstr(stdscr, y, x + 7 + bar_w, mem_info, 0, border_x)
-
-            # Right column starts immediately after the left column's content.
-            right_col_start = x + 7 + bar_w + len(mem_info) + gap
-            self._safe_addstr(stdscr, y, right_col_start, "Swap:", 0, border_x)
-            self.draw_bar(stdscr, y, right_col_start + 5, swap_pct, bar_w, COLOR_SWAP, border_x)
-            self._safe_addstr(stdscr, y, right_col_start + 5 + bar_w, swap_info, 0, border_x)
-
+            self.draw_stacked_bar(
+                stdscr, y, x + 7, (used_gb, cache_gb, free_gb), seg_colors, bar_w, border_x,
+            )
+            if inline is not None:
+                draw_parts(y, x + 7 + bar_w + 1, inline)
             self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
             y += 1
-        else:
-            # Narrow: stack Mem and Swap on their own rows. Shorten the info
-            # strings progressively so values are never clipped mid-number.
-            content_width = bw - 4
-            if content_width < 7 + MIN_BAR_WIDTH + len(mem_info) - 2:
-                mem_info = f" {used_gb:.1f}/{total_gb:.1f}G {mem_pct:.0f}%"
-                swap_info = f" {swap_used_gb:.1f}/{swap_total_gb:.1f}G {swap_pct:.0f}%"
-            if content_width < 7 + MIN_BAR_WIDTH + len(mem_info) - 2:
-                mem_info = f" {mem_pct:.0f}%"
-                swap_info = f" {swap_pct:.0f}%"
 
-            overhead = 7 + max(len(mem_info), len(swap_info)) + 1
-            bar_w = self._bar_width(bw, False, overhead)
+        # Total/Available row — deliberately apart from the bar: Available is
+        # the kernel's overlapping estimate, not a fourth stacked segment.
+        summary_specs = (
+            lambda: f"Total: {total_gb:6.1f} GiB | Available: {avail_gb:6.1f} GiB",
+            lambda: f"Total: {total_gb:5.1f}G | Available: {avail_gb:5.1f}G",
+            lambda: f"Total {total_gb:5.1f}G | Avail {avail_gb:5.1f}G",
+            lambda: f"T {total_gb:4.1f}G A {avail_gb:4.1f}G",
+        )
+        summary = summary_specs[-1]()
+        for spec in summary_specs:
+            if len(spec()) <= bw - 4:
+                summary = spec()
+                break
 
-            for label, pct, info, color in (
-                ("│ Mem: ", mem_pct, mem_info, COLOR_MEMORY),
-                ("│ Swap:", swap_pct, swap_info, COLOR_SWAP),
-            ):
-                self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
-                self._safe_addstr(stdscr, y, x, label, 0, right_edge)
-                self.draw_bar(stdscr, y, x + 7, pct, bar_w, color, border_x)
-                self._safe_addstr(stdscr, y, x + 7 + bar_w, info, 0, border_x)
-                self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
-                y += 1
+        # Swap row: bar + progressively shorter info so values are never
+        # clipped mid-number.
+        swap_specs = (
+            lambda: f" {swap_used_gb:4.1f}/{swap_total_gb:4.1f}GB {swap_pct:5.1f}%",
+            lambda: f" {swap_used_gb:4.1f}/{swap_total_gb:4.1f}G {swap_pct:4.0f}%",
+            lambda: f" {swap_pct:.0f}%",
+        )
+        swap_info = swap_specs[-1]()
+        for spec in swap_specs:
+            if bw - 2 - 7 - 1 - len(spec()) >= MIN_BAR_WIDTH:
+                swap_info = spec()
+                break
+        swap_bar_w = self._bar_width(bw, False, 7 + 1 + len(swap_info))
+
+        def draw_swap_row(row_y: int) -> None:
+            self._safe_addstr(stdscr, row_y, x, "│ Swap:", 0, right_edge)
+            self.draw_bar(stdscr, row_y, x + 7, swap_pct, swap_bar_w, COLOR_SWAP, border_x)
+            self._safe_addstr(stdscr, row_y, x + 7 + swap_bar_w, swap_info, 0, border_x)
+
+        # Fit the remaining rows above the box footer + terminal footer: on a
+        # very short terminal drop swap first, then summary, then legend,
+        # instead of letting the section run off-screen.
+        content_rows = []
+        if legend_row is not None:
+            content_rows.append(lambda row_y: draw_parts(row_y, x + 2, legend_row))
+        content_rows.append(lambda row_y: self._safe_addstr(stdscr, row_y, x + 2, summary, 0, border_x))
+        content_rows.append(draw_swap_row)
+        budget = max(0, (height - 2) - y)
+        while len(content_rows) > budget:
+            content_rows.pop()
+
+        for draw_row in content_rows:
+            blank_row(y)
+            draw_row(y)
+            self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
+            y += 1
 
         # Box footer
         self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
@@ -1628,7 +1902,7 @@ class TermMon:
             x = max(0, width - self._box_width)
 
         # Draw system memory section
-        y = self._draw_memory_section(stdscr, y, x, snapshot, self._box_width)
+        y = self._draw_memory_section(stdscr, y, x, height, snapshot, self._box_width)
 
         # Draw CPU section
         y = self._draw_cpu_section(stdscr, y, x, height, snapshot, self._box_width)
@@ -1674,6 +1948,8 @@ class TermMon:
         curses.init_pair(COLOR_CPU, curses.COLOR_CYAN, -1)
         curses.init_pair(COLOR_VRAM, curses.COLOR_MAGENTA, -1)
         curses.init_pair(COLOR_POPUP, curses.COLOR_WHITE, curses.COLOR_BLUE)  # White on blue
+        curses.init_pair(COLOR_MEM_CACHE, curses.COLOR_CYAN, -1)
+        curses.init_pair(COLOR_MEM_FREE, curses.COLOR_WHITE, -1)
         
         curses.cbreak()
         stdscr.keypad(True)
