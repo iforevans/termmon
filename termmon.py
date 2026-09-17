@@ -43,17 +43,21 @@ License:
 import curses
 import concurrent.futures
 import fcntl
+import http.client
 import io
 import json
 import os
 import platform
 import signal
 import shutil
+import socket
 import struct
 import subprocess
 import sys
 import termios
 import threading
+import urllib.request
+from collections import deque
 from datetime import datetime
 import logging
 import time
@@ -72,7 +76,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.19.0"
+__version__ = "1.20.0"
 __author__ = "Ifor Evans"
 
 
@@ -94,8 +98,21 @@ COLOR_SWAP = 3          # Yellow - swap usage bar
 COLOR_CPU = 4           # Cyan - CPU usage bar
 COLOR_VRAM = 5          # Magenta - VRAM usage bar
 COLOR_POPUP = 6         # White on blue - help popup
-COLOR_MEM_CACHE = 7     # Cyan - "Cache" segment of the stacked RAM bar
-COLOR_MEM_FREE = 8      # White - "Free" segment of the stacked RAM bar
+COLOR_MEM_CACHE = 7         # Cyan - "Cache" segment of the stacked RAM bar
+COLOR_MEM_FREE = 8          # White - "Free" segment of the stacked RAM bar
+COLOR_INFER = 9             # Green - LLM inference section (decode rate)
+
+# LLM inference panels: sliding window for tokens/sec (llm-visuals pattern).
+# Deltas are pushed every refresh; the rate is window-token-sum / window-span,
+# which is honest under MTP's bursty token landings.
+INFER_RATE_WINDOW = 4.0     # seconds of token deltas behind the rate
+INFER_HIST_LEN = 28         # sparkline samples (~1 min at 2s refresh)
+INFER_MAX_FAILS = 5         # consecutive unreachable polls before muting a port
+INFER_MAX_MODELS = 4        # cap on models displayed
+# Sparkline glyphs, lowest to tallest block.
+SPARK_RAMP = "▁▂▃▄▅▆▇█"
+# Sentinel: the port spoke non-HTTP (a raw debug socket). Mute permanently.
+NOT_HTTP = object()
 
 # NVIDIA GPU query fields (must match nvidia-smi output order)
 GPU_QUERY_FIELDS = "index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw"
@@ -132,6 +149,14 @@ class TermMon:
         self._gpu_data_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix='termmon-gpu'
         )
+        # --- LLM inference tracking (llama-server /slots etc.) ---
+        # Port discovery is cached: scanning /proc is far more expensive than
+        # an HTTP GET, and the set of listening inference ports changes rarely.
+        self._infer_ports: Optional[set] = None     # cached candidate ports
+        self._infer_ports_scanned: float = 0.0      # last full port scan
+        self._infer_alive: Dict[int, int] = {}      # port -> fails in a row
+        self._infer_trackers: Dict[int, Dict[str, Any]] = {}  # port -> state
+        self.inference_models: List[Dict[str, Any]] = []  # per-port rate dicts
     
     def _on_resize(self, signum: int, frame: Any) -> None:
         """Handle terminal resize (SIGWINCH)."""
@@ -862,11 +887,23 @@ class TermMon:
                 logger.error("Failed to collect GPU data: %s", e)
                 pass
 
+            # --- LLM inference telemetry (localhost /slots polls) ---
+            # Runs after GPU collection so a slow/blocked HTTP poll cannot
+            # delay resource stats. Never holds the lock during the requests.
+            try:
+                self._track_inference()
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                logger.error("Failed to poll inference servers: %s", e)
+            new_infer = list(self.inference_models)
+
             # --- Atomic swap under the lock ---
             with self._stats_lock:
                 self.system_data = new_sysdata
                 self.gpu_data = new_gpus
                 self.gpu_processes = new_procs
+                self.inference_models = new_infer
 
     def update_stats(self) -> None:
         """Signal background thread to update stats (non-blocking)."""
@@ -984,6 +1021,254 @@ class TermMon:
             'mem_percent': (used / total * 100.0) if total else 0.0,
         }
     
+    # ------------------------------------------------------------------ #
+    #        LLM inference telemetry (llama-server /slots)                #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _find_inference_ports() -> List[int]:
+        """Ports with a live IPv4/IPv6 LISTEN socket owned by this user.
+
+        Reads /proc/net/tcp{,6}, keeps LISTEN (st=0A) entries, resolves the
+        inode to a pid via /proc/<pid>/fd, and keeps only processes whose
+        cmdline mentions a serving engine. Cheap enough to run every refresh
+        on a desktop, cached above anyway.
+        """
+        candidates = []
+        inodes = {}
+        for path in ('/proc/net/tcp', '/proc/net/tcp6'):
+            try:
+                with open(path) as f:
+                    next(f)  # header
+                    for line in f:
+                        cols = line.split()
+                        if len(cols) < 10:
+                            continue
+                        if cols[3] != '0A':  # 0A = TCP_LISTEN
+                            continue
+                        local = cols[1]
+                        port = int(local.split(':')[1], 16)
+                        if port < 1024 or port > 65535:
+                            continue
+                        inodes[cols[9]] = port
+            except OSError:
+                continue
+        if not inodes:
+            return []
+        my_uid = os.getuid()
+        try:
+            entries = os.listdir('/proc')
+        except OSError:
+            return []
+        for pid_dir in entries:
+            if not pid_dir.isdigit():
+                continue
+            pid = int(pid_dir)
+            try:
+                st = os.stat(f'/proc/{pid}').st_uid
+                if st != my_uid:
+                    continue
+                with open(f'/proc/{pid}/cmdline', 'rb') as f:
+                    cmdline = f.read().replace(b'\x00', b' ').decode('utf-8', 'replace')
+            except OSError:
+                continue
+            low = cmdline.lower()
+            if not any(k in low for k in ('llama-server', 'llama_server', 'vllm',
+                                          'ollama serve', 'sglang')):
+                continue
+            # TermMon itself may carry those words (e.g. --help text, or a
+            # -c script under development); never monitor our own process.
+            if pid == os.getpid():
+                continue
+            fd_dir = f'/proc/{pid}/fd'
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    link = os.readlink(f'{fd_dir}/{fd}')
+                except OSError:
+                    continue
+                if link.startswith('socket:['):
+                    port = inodes.get(link[8:-1])
+                    if port is not None:
+                        candidates.append((pid, port))
+        ports = sorted({p for _, p in candidates})
+        # Rank: llama.cpp default 8080 first, then ollama 11434, then others.
+        rank = {8080: 0, 11434: 1}
+        return sorted(ports, key=lambda p: (rank.get(p, 2), p))
+
+    @staticmethod
+    def _http_json(port: int, path: str, timeout: float = 0.8):
+        """GET a localhost JSON endpoint.
+
+        Returns the parsed JSON, None on connection failure, or the string
+        NOT_HTTP when the port answers with something that is not an HTTP
+        response (a raw debug socket) — that verdict is permanent, so the
+        caller mutes the port at once instead of re-probing it.
+        """
+        try:
+            url = f'http://127.0.0.1:{port}{path}'
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                return json.loads(resp.read().decode('utf-8', 'replace'))
+        except (http.client.HTTPException, UnicodeDecodeError):
+            return NOT_HTTP
+        except OSError:
+            return None
+
+    def _track_inference(self) -> None:
+        """Poll llama-server /slots; push token deltas; return per-model rates.
+
+        Rate math mirrors llm-visuals: the raw decoded-token delta of each
+        interval goes into a sliding window; tokens/sec is the window's token
+        sum over its time span. Per-poll rates flicker under MTP because
+        speculative decoders land tokens in bursts, so the window IS the
+        measurement.
+
+        Prefill phase = prompt_processed climbing. Decode phase = n_decoded
+        climbing. Task id (id_task) changes per request and anchors
+        generation counters; if it decreases or resets we re-anchor instead of
+        reporting a negative rate.
+        """
+        now = time.monotonic()
+        # Refresh candidate ports every few seconds, not every poll.
+        if self._infer_ports is None or now - self._infer_ports_scanned > 10.0:
+            self._infer_ports = set(self._find_inference_ports())
+            self._infer_ports_scanned = now
+            # Un-mute periodically so a server that died and came back on the
+            # same port (without the listening socket ever disappearing from
+            # our scan) is picked up again. NOT_HTTP verdicts expire too —
+            # cheap to re-check, and a rebound port may now speak HTTP.
+            self._infer_alive = {p: f for p, f in self._infer_alive.items()
+                                 if 0 < f < INFER_MAX_FAILS}
+        # Drop trackers whose port stopped listening (server shut down).
+        for port in [p for p in self._infer_trackers if p not in self._infer_ports]:
+            del self._infer_trackers[port]
+            self._infer_alive.pop(port, None)
+
+        models: List[Dict[str, Any]] = []
+        for port in sorted(self._infer_ports,
+                           key=lambda p: (p != 8080, p)):
+            fails = self._infer_alive.get(port, 0)
+            if fails >= INFER_MAX_FAILS:
+                continue  # mute dead ports; retried when the scan re-lists them
+            slots = self._http_json(port, '/slots')
+            if slots is NOT_HTTP:
+                self._infer_alive[port] = INFER_MAX_FAILS  # not an HTTP server, mute now
+                continue
+            if not isinstance(slots, list) or not slots:
+                self._infer_alive[port] = fails + 1
+                continue
+            self._infer_alive[port] = 0
+            props = self._http_json(port, '/props')
+            if props is NOT_HTTP or not isinstance(props, dict):
+                props = {}
+            model_name = props.get('model') or props.get('model_filename') or ''
+            if not model_name:
+                model_name = 'llama-server'
+            tracker = self._infer_trackers.setdefault(
+                port, {'last': {}, 'win': {}, 'hist': deque(maxlen=INFER_HIST_LEN),
+                       'ctx': 0, 'mtp': False, 'total': 0, 'reqs': 0})
+
+            win = tracker['win']
+            # Trim window entries older than the rate window.
+            for slot_id, samples in list(win.items()):
+                win[slot_id] = [(t0, t1, n) for (t0, t1, n) in samples
+                                if now - t1 <= INFER_RATE_WINDOW]
+                if not win[slot_id]:
+                    del win[slot_id]
+
+            any_busy = False
+            busy_slots: List[Dict[str, Any]] = []
+            for slot in slots:
+                if not isinstance(slot, dict):
+                    continue
+                slot_id = slot.get('id', 0)
+                # next_token is a dict on stock llama.cpp and a one-element
+                # list on some forks; normalise both to a dict.
+                next_tok = slot.get('next_token') or {}
+                if isinstance(next_tok, list):
+                    next_tok = next_tok[0] if next_tok and isinstance(next_tok[0], dict) else {}
+                n_decoded = next_tok.get('n_decoded', 0)
+                prompt_proc = slot.get('n_prompt_tokens_processed', 0)
+                n_prompt = slot.get('n_prompt_tokens', 0)
+                processing = bool(slot.get('is_processing', False))
+                if processing:
+                    any_busy = True
+                id_task = slot.get('id_task', 0)
+                prev = tracker['last'].get(slot_id)
+                if prev:
+                    # (prev_id, prev_decoded, prev_prompt_proc, prev_time)
+                    p_id, p_dec, p_pp, p_t = prev
+                    d_dec = n_decoded - p_dec
+                    d_pp = prompt_proc - p_pp
+                    if p_id != id_task:
+                        # New request: re-anchor; don't count the jump.
+                        d_dec = d_pp = 0
+                        phase = 'prefill' if processing else 'idle'
+                        rate = 0.0
+                    else:
+                        if d_dec < 0 or d_pp < 0:
+                            d_dec = d_pp = 0
+                        win.setdefault(slot_id, []).append(
+                            (p_t, now, d_dec + d_pp))
+                        tracker['total'] += d_dec + d_pp
+                        if d_pp > 0 and d_dec == 0:
+                            phase = 'prefill'
+                        elif d_dec > 0:
+                            phase = 'decode'
+                        else:
+                            phase = 'idle'
+                        span = max(now - p_t, 0.05)
+                        rate = (d_dec + d_pp) / span
+                        if d_dec + d_pp > 0:
+                            tracker['hist'].append((d_dec + d_pp) / span)
+                else:
+                    phase = 'prefill' if processing else 'idle'
+                    rate = 0.0
+                    win.setdefault(slot_id, [])
+                tracker['last'][slot_id] = (id_task, n_decoded, prompt_proc, now)
+                if processing:
+                    busy_slots.append({'phase': phase, 'rate': rate,
+                                       'decoded': n_decoded,
+                                       'prompt': n_prompt,
+                                       'prompt_proc': prompt_proc})
+
+            tokens_total = sum(n for samples in win.values() for _, _, n in samples)
+            spans = [now - t0 for samples in win.values() for (t0, _t1, _n) in samples]
+            window_secs = max(spans, default=0.0)
+            model_rate = tokens_total / max(window_secs, 0.05)
+            spec = str((slots[0].get('params') or {}).get('speculative.types', '')
+                       ) if slots else ''
+            mtp = 'mtp' in spec.lower()
+            tracker['mtp'] = mtp
+            n_ctx = next((s.get('n_ctx') for s in slots if s.get('n_ctx')), 0)
+            tracker['ctx'] = n_ctx
+
+            phase = 'idle'
+            if busy_slots:
+                active = [b for b in busy_slots if b['phase'] != 'idle']
+                phase = active[0]['phase'] if active else 'prefill'
+
+            models.append({
+                'port': port,
+                'name': os.path.basename(str(model_name)) if model_name else 'llama-server',
+                'rate': model_rate,
+                'phase': phase,
+                'ctx': n_ctx,
+                'ctx_used': sum(max(dec, 0) + max(pp, 0)
+                                for (_task, dec, pp, _t) in tracker['last'].values()),
+                'mtp': mtp,
+                'hist': list(tracker['hist']),
+                'total': tracker['total'],
+                'busy_slots': len(busy_slots),
+                'n_slots': len(slots),
+            })
+            if len(models) >= INFER_MAX_MODELS:
+                break
+        self.inference_models = models[:INFER_MAX_MODELS]
+
     def _get_gpu_data_parallel(self) -> None:
         """Run get_gpu_stats() and get_gpu_processes() concurrently."""
         try:
@@ -1793,6 +2078,88 @@ class TermMon:
         cmd_width = max(1, view_width - self._GPU_PROCESS_FIXED_HEADER_LEN)
         return max(0, max((len(self._process_command(proc)) for proc in gpuprocs), default=0) - cmd_width)
 
+    # ------------------------------------------------------------------ #
+    #      LLM INFERENCE section (decode rate / phase / context)          #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _sparkline(hist: List[float], width: int) -> str:
+        """Render a rate history as block glyphs, auto-scaled to its own peak."""
+        if not hist or width <= 0:
+            return " " * max(0, width)
+        peak = max(hist)
+        if peak <= 0:
+            return SPARK_RAMP[0] * width
+        samples = hist[-width:]
+        out = []
+        for v in samples:
+            idx = int(v / peak * (len(SPARK_RAMP) - 1))
+            out.append(SPARK_RAMP[max(0, min(len(SPARK_RAMP) - 1, idx))])
+        return "".join(out).rjust(width)
+
+    def _draw_inference_section(self, stdscr, y: int, x: int, height: int,
+                                snapshot: Dict[str, Any], bw: int) -> int:
+        """
+        LLM INFERENCE panel: live decode rate per llama-server, sparkline,
+        phase, and context fill. Draws nothing when no inference server was
+        detected — a monitor does not get a section of lies.
+        """
+        models = snapshot.get('inference_models') or []
+        if not models:
+            return y
+
+        infer_attr = curses.color_pair(COLOR_INFER)
+        right_edge = x + bw
+        self._safe_addstr(stdscr, y, x, "┌" + "─" * (bw - 2) + "┐", 0, right_edge)
+        y += 1
+
+        title = " LLM INFERENCE"
+        self._safe_addstr(stdscr, y, x, ("│" + title).ljust(bw - 1)[:bw - 1] + "│", 0, right_edge)
+        y += 1
+
+        for m in models:
+            if y >= height - 4:
+                break
+            rate = m.get('rate', 0.0)
+            phase = m.get('phase', 'idle')
+            hist = m.get('hist') or []
+            # Rate line: name :port PHASE rate tok/s [spark] [MTP]
+            name = str(m.get('name', 'llama-server'))[:26]
+            phase_txt = phase.upper()
+            if phase != 'idle' and m.get('busy_slots', 0) > 1:
+                phase_txt += f" x{m['busy_slots']}"
+            rate_txt = f"{rate:6.1f} tok/s" if rate > 0 or phase != 'idle' else "  idle      "
+            mtp_txt = " MTP" if m.get('mtp') else ""
+            fixed = f" {name} :{m.get('port', 0)} {phase_txt:<12}{rate_txt}{mtp_txt} "
+            spark_w = bw - 4 - len(fixed)
+            line = fixed
+            if spark_w >= 8:
+                line += self._sparkline(hist, spark_w)
+            line = line[:bw - 4]
+            self._safe_addstr(
+                stdscr, y, x, "│ " + line.ljust(bw - 4)[:bw - 4] + " │",
+                infer_attr if rate > 0 else 0, x + bw,
+            )
+            y += 1
+
+            # Context-fill line: ctx used = prompt + decoded on busy slots.
+            ctx = m.get('ctx', 0)
+            if ctx and y < height - 4:
+                used = m.get('ctx_used', 0)
+                pct = min(100.0, 100.0 * used / ctx) if ctx else 0.0
+                bar_w = max(6, min(30, bw - 34))
+                filled = int(bar_w * pct / 100.0)
+                bar = "█" * filled + "░" * (bar_w - filled)
+                ctx_line = f" ctx {used:,}/{ctx:,} {bar} {pct:4.1f}%"
+                self._safe_addstr(
+                    stdscr, y, x, "│ " + ctx_line.ljust(bw - 4)[:bw - 4] + " │", 0, x + bw,
+                )
+                y += 1
+
+        self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
+        y += 2
+        return y
+
     def _draw_gpu_processes_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int) -> int:
         """
         Draw the GPU processes section as an nvtop-style horizontally scrollable table.
@@ -1858,6 +2225,7 @@ class TermMon:
                 'system_data': dict(self.system_data),
                 'gpu_data': list(self.gpu_data),
                 'gpu_processes': list(self.gpu_processes),
+                'inference_models': list(self.inference_models),
             }
         self._draw_frame(stdscr, snapshot)
 
@@ -1909,6 +2277,9 @@ class TermMon:
 
         # Draw GPU section
         y = self._draw_gpu_section(stdscr, y, x, height, snapshot, self._box_width)
+
+        # Draw LLM inference section (only when an inference server exists)
+        y = self._draw_inference_section(stdscr, y, x, height, snapshot, self._box_width)
 
         # Draw GPU processes section
         y = self._draw_gpu_processes_section(stdscr, y, x, height, snapshot, self._box_width)

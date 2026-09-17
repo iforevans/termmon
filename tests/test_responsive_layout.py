@@ -198,6 +198,18 @@ FAKE_GPU_DATA_UMA = [{
     'gpu_cores': 38, 'is_uma': True,
 }]
 
+# LLM inference variant: exercises the LLM INFERENCE panel across all widths
+FAKE_INFERENCE_MODELS = [{
+    'port': 8080, 'name': 'Qwen3.6-27B-UD-Q5_K_XL.gguf', 'rate': 41.7,
+    'phase': 'decode', 'ctx': 204800, 'ctx_used': 33412, 'mtp': True,
+    'hist': [30.0, 35.5, 41.2, 44.0, 39.8, 41.7, 28.0, 41.7],
+    'total': 128456, 'busy_slots': 1, 'n_slots': 1,
+}, {
+    'port': 8081, 'name': 'idle-model.gguf', 'rate': 0.0,
+    'phase': 'idle', 'ctx': 8192, 'ctx_used': 0, 'mtp': False,
+    'hist': [], 'total': 0, 'busy_slots': 0, 'n_slots': 2,
+}]
+
 BOX_CHARS = set("┌┐└┘│─")
 
 
@@ -218,6 +230,8 @@ def make_app(mod, gpu_data):
         app.gpu_data = list(gpu_data)
     if hasattr(app, 'gpu_processes'):
         app.gpu_processes = list(FAKE_GPU_PROCESSES)
+    if hasattr(app, 'inference_models'):
+        app.inference_models = list(FAKE_INFERENCE_MODELS)
     return app
 
 
