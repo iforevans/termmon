@@ -13,7 +13,6 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
 - **GPU Process Tracking**: Top 5 active GPU compute processes (nvtop-style)
   - Shows PID, user, GPU memory, host memory, and command
   - Sorted by VRAM usage (descending)
-- **LLM Inference Telemetry**: auto-detects local llama.cpp/vLLM/ollama servers and shows live decode rate (tok/s), phase (PREFILL/DECODE), MTP flag, a rate sparkline, and context fill — per model. Hides itself when nothing is serving
 - **Color-coded progress bars**: Visual feedback for resource usage
 - **Fully responsive layout**: Reflows to any terminal size (nvtop-style) — resize freely, content never wraps or overwrites itself. Degrades gracefully from ultra-wide down to ~28 columns
 - **Auto-refresh**: Updates every 2 seconds
@@ -199,13 +198,6 @@ python3 tests/test_pty_layout.py --show 80
 The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
-
-### v1.20.0 (2026-09-17)
-- **LLM INFERENCE section**: a live decode-rate panel for locally served models, inspired by llm-visuals (DingoOz). TermMon now auto-discovers llama.cpp-family inference servers (ports with a LISTEN socket owned by a `llama-server`/vLLM/ollama/sglang process, via `/proc/net/tcp{,6}` inode matching), polls `/slots` + `/props` each refresh, and draws per model: `name :port PHASE rate tok/s [MTP]` with an auto-scaled block sparkline of recent instantaneous rates, plus a context-fill bar (`ctx used/total`). The panel draws nothing when no server is detected.
-- **Honest rate math**: token deltas per poll interval go into a sliding 4 s window; tokens/sec is the window's token sum over its time span — per-poll rates flicker under MTP because speculative decoders land tokens in bursts. Request boundary (`id_task`) changes re-anchor counters instead of producing jump artifacts; negative deltas clamp. Phase is derived from which counter moves: `n_prompt_tokens_processed` climbing = PREFILL, `n_decoded` climbing = DECODE.
-- **Robust port handling**: non-HTTP responders (raw debug sockets) are muted instantly via a `NOT_HTTP` sentinel; unreachable ports mute after 5 consecutive failures; mutes clear on the periodic (10 s) port rescan so servers rebound on the same port are found. TermMon excludes its own PID from discovery (cmdline keyword matches would otherwise catch development/test invocations). `next_token` is normalised from dict-or-list — the buun llama.cpp fork serialises it as a one-element list.
-- **Threading**: collection runs in the stats thread after GPU data (a blocked HTTP poll cannot delay resource stats), never under `_stats_lock` during requests; results join the atomic swap. Colour pair `COLOR_INFER` (green) highlights active rates.
-- Tests: responsive sweep now renders the inference panel across all widths (5,640 configs, was 2,820); PTY suite passes static + live resizes. Live-verified against llama-server (buun fork) on :8080 at 64 tok/s mid-generation.
 
 ### v1.19.0 (2026-09-11)
 - **Stacked Used/Cache/Free RAM bar**: the single system-memory bar is now one stacked bar of three non-overlapping, colour-coded segments — 🟢 Used (green), 🔵 Cache (cyan), ⚪ Free (white) — with a colour-keyed legend giving each amount in GiB (inline beside the bar when it fits, otherwise on its own row), plus a `Total: … | Available: …` row and the swap bar. The point: memory held for mmap/file caching is now visible. A llama-server host could previously headline ~18 GiB "used" while ~90 GiB sat in buffers/cache.
