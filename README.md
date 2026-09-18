@@ -200,9 +200,6 @@ The mock suite asserts no write lands outside the terminal grid and that box edg
 
 ## Development Timeline
 
-### v1.20.1 (2026-09-17)
-- **Compact mode on short terminals**: with an inference panel active and terminal height < 40, the CPU core grid collapses to a single `Cores: ▂█▁▄… 4.3%` sparkline row (~10 rows freed). Without this, LLM INFERENCE landed below the visible area on iPad-height SSH windows — the panel existed but nobody could see it. Panel is now fully visible at 36 rows.
-
 ### v1.20.0 (2026-09-17)
 - **LLM INFERENCE section**: a live decode-rate panel for locally served models, inspired by llm-visuals (DingoOz). TermMon now auto-discovers llama.cpp-family inference servers (ports with a LISTEN socket owned by a `llama-server`/vLLM/ollama/sglang process, via `/proc/net/tcp{,6}` inode matching), polls `/slots` + `/props` each refresh, and draws per model: `name :port PHASE rate tok/s [MTP]` with an auto-scaled block sparkline of recent instantaneous rates, plus a context-fill bar (`ctx used/total`). The panel draws nothing when no server is detected.
 - **Honest rate math**: token deltas per poll interval go into a sliding 4 s window; tokens/sec is the window's token sum over its time span — per-poll rates flicker under MTP because speculative decoders land tokens in bursts. Request boundary (`id_task`) changes re-anchor counters instead of producing jump artifacts; negative deltas clamp. Phase is derived from which counter moves: `n_prompt_tokens_processed` climbing = PREFILL, `n_decoded` climbing = DECODE.

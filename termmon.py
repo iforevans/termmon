@@ -76,7 +76,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.20.1"
+__version__ = "1.20.0"
 __author__ = "Ifor Evans"
 
 
@@ -157,10 +157,6 @@ class TermMon:
         self._infer_alive: Dict[int, int] = {}      # port -> fails in a row
         self._infer_trackers: Dict[int, Dict[str, Any]] = {}  # port -> state
         self.inference_models: List[Dict[str, Any]] = []  # per-port rate dicts
-        # Recomputed per frame in _draw_frame: with an inference panel competing
-        # for rows on a short (iPad-height) terminal, the CPU core grid collapses
-        # to a one-line sparkline and box gaps shrink so the panel stays visible.
-        self._compact: bool = False
     
     def _on_resize(self, signum: int, frame: Any) -> None:
         """Handle terminal resize (SIGWINCH)."""
@@ -1767,19 +1763,6 @@ class TermMon:
         y += 1
 
         per_core = sysdata.get('per_core_usage', [])
-        cpu_attr = curses.color_pair(COLOR_CPU) | curses.A_BOLD
-
-        # Compact mode (short terminal with an inference panel to fit): the
-        # whole core grid collapses to one sparkline row, ~10 rows saved.
-        if self._compact and len(per_core) > 2 and y < height - 3:
-            cores_w = bw - 4 - len(" Cores: ") - len(" 100.0%")
-            ramp = self._sparkline([p for _, p in per_core], max(4, cores_w))
-            line = f" Cores: {ramp} {cpu_pct:5.1f}%".ljust(bw - 4)[:bw - 4]
-            self._safe_addstr(stdscr, y, x, "│ " + line + " │", cpu_attr, x + bw)
-            y += 1
-            self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
-            y += 2
-            return y
 
         # Build each row as one complete string instead of several positioned
         # writes; this avoids stale characters and cursor drift on narrow
@@ -1828,6 +1811,8 @@ class TermMon:
             bar, filled = bar_parts(core_pct, bar_width)
             text = label + bar + pct_text
             return text[:width].ljust(width), len(label), filled
+
+        cpu_attr = curses.color_pair(COLOR_CPU) | curses.A_BOLD
 
         for i in range(rows):
             if y >= height - 3:
@@ -2254,11 +2239,6 @@ class TermMon:
         height, width = stdscr.getmaxyx()
 
         stdscr.erase()
-
-        # Compact mode: an inference panel must stay on screen on short
-        # (iPad/mobile SSH) terminals, so below this height the CPU core grid
-        # collapses to a one-line sparkline, freeing ~10 rows for it.
-        self._compact = bool(snapshot.get('inference_models')) and height < 40
 
         # Terminal too small to render anything meaningful — say so rather than
         # drawing a mangled dashboard.
