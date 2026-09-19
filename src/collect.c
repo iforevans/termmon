@@ -683,7 +683,7 @@ void stats_init(Stats *st)
 static void *stats_thread(void *arg)
 {
     Stats *st = (Stats *)arg;
-    double last = now_mono() - REFRESH_INTERVAL;
+    double last = now_mono() - g_refresh_interval;
 
     for (;;) {
         pthread_mutex_lock(&st->lock);
@@ -704,7 +704,7 @@ static void *stats_thread(void *arg)
             break;
 
         double now = now_mono();
-        if (now - last < REFRESH_INTERVAL)
+        if (now - last < g_refresh_interval)
             continue;
         last = now;
 

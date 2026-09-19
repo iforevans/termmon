@@ -202,6 +202,23 @@ static void test_process_table(void)
     CHECK(ms == (longlen > 1 ? longlen - 1 : 0));
 }
 
+static void test_fmt_interval(void)
+{
+    char b[32];
+    fmt_interval(b, sizeof b, 1.0);
+    CHECK(strcmp(b, "1") == 0);
+    fmt_interval(b, sizeof b, 2.0);
+    CHECK(strcmp(b, "2") == 0);
+    fmt_interval(b, sizeof b, 0.5);
+    CHECK(strcmp(b, "0.5") == 0);
+    fmt_interval(b, sizeof b, 1.5);
+    CHECK(strcmp(b, "1.5") == 0);
+    fmt_interval(b, sizeof b, 0.2);
+    CHECK(strcmp(b, "0.2") == 0);
+    fmt_interval(b, sizeof b, 60.0);
+    CHECK(strcmp(b, "60") == 0);
+}
+
 int main(void)
 {
     test_utf8_helpers();
@@ -211,6 +228,7 @@ int main(void)
     test_mem_segments();
     test_proc_command();
     test_process_table();
+    test_fmt_interval();
     if (failures == 0) {
         printf("layout unit tests: all passed\n");
         return 0;

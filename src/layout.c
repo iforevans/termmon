@@ -296,3 +296,8 @@ int max_process_scroll(int bw, const GpuProc *procs, int n_procs)
     }
     return best - cmd_width > 0 ? best - cmd_width : 0;
 }
+
+void fmt_interval(char *dst, size_t cap, double v)
+{
+    snprintf(dst, cap, "%g", v);
+}

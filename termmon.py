@@ -72,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.20.0"
+__version__ = "1.21.0"
 __author__ = "Ifor Evans"
 
 
@@ -82,6 +82,37 @@ MIN_BAR_WIDTH = 5      # Bars never shrink below this before layout switches mod
 MAX_BOX_WIDTH = 120    # Cap so the dashboard stays readable on ultra-wide terminals
 MIN_BOX_WIDTH = 24     # Below this the terminal is too small to render anything useful
 REFRESH_INTERVAL = 1   # Seconds between auto-refreshes
+REFRESH_INTERVAL_MIN = 0.2
+REFRESH_INTERVAL_MAX = 60.0
+
+
+def apply_interval_args(argv: list) -> None:
+    """Parse -i/--interval SECONDS from argv and set REFRESH_INTERVAL (clamped).
+
+    Mirrors the C port's parse_args(): -i VALUE, --interval VALUE,
+    --interval=VALUE; clamped to [0.2, 60]; integer-valued input displays
+    without a decimal part.
+    """
+    global REFRESH_INTERVAL
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ('-i', '--interval'):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"error: {a} requires a value")
+            val = argv[i + 1]
+            i += 2
+        elif a.startswith('--interval='):
+            val = a[len('--interval='):]
+            i += 1
+        else:
+            raise SystemExit(f"error: unknown argument {a!r}")
+        try:
+            v = float(val)
+        except ValueError:
+            raise SystemExit(f"error: invalid interval {val!r}")
+        v = min(max(v, REFRESH_INTERVAL_MIN), REFRESH_INTERVAL_MAX)
+        REFRESH_INTERVAL = int(v) if v.is_integer() else v
 
 # Responsive breakpoints (box width in columns). Derived from measured format
 # string lengths — see _draw_*_section for the per-section overhead arithmetic.
@@ -2028,6 +2059,14 @@ class TermMon:
 
 
 if __name__ == "__main__":
+    if '-h' in sys.argv[1:] or '--help' in sys.argv[1:]:
+        print(f"Usage: {os.path.basename(sys.argv[0])} [-i|--interval SECONDS]\n"
+              f"  Refresh cadence in seconds "
+              f"({REFRESH_INTERVAL_MIN:g}-{REFRESH_INTERVAL_MAX:g}, "
+              f"default {REFRESH_INTERVAL:g})")
+        sys.exit(0)
+    apply_interval_args(sys.argv[1:])
+
     app = TermMon()
 
     # Warn on macOS if no GPU monitoring tool is available

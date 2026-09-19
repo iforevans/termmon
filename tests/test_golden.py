@@ -104,13 +104,13 @@ def _finish(pid, fd, data):
     return data
 
 
-def render_py(cols, rows, key=None, first_wait=1.2):
+def render_py(cols, rows, key=None, first_wait=1.2, args=()):
     script = H._child_script_path()
     pid, fd = pty.fork()
     if pid == 0:
         os.environ['TERM'] = 'xterm-256color'
         os.environ['LANG'] = 'en_US.UTF-8'
-        os.execv(sys.executable, [sys.executable, script])
+        os.execv(sys.executable, [sys.executable, script, *args])
         os._exit(1)
     H.set_size(fd, cols, rows)
     data = drain_to_boundary(fd, max_seconds=first_wait + 0.6,
@@ -121,14 +121,14 @@ def render_py(cols, rows, key=None, first_wait=1.2):
     return _finish(pid, fd, data)
 
 
-def render_c(cols, rows, key=None, first_wait=1.2):
+def render_c(cols, rows, key=None, first_wait=1.2, args=()):
     fixture = _fixture_path()
     pid, fd = pty.fork()
     if pid == 0:
         os.environ['TERM'] = 'xterm-256color'
         os.environ['LANG'] = 'en_US.UTF-8'
         os.environ['TERMMON_FIXTURE'] = fixture
-        os.execv(CBIN, [CBIN])
+        os.execv(CBIN, [CBIN, *args])
         os._exit(1)
     H.set_size(fd, cols, rows)
     data = drain_to_boundary(fd, max_seconds=first_wait + 0.6,
@@ -196,6 +196,47 @@ def test_help_popup_matches():
         f"{c}x{r} ({len(d)} rows)" for c, r, d in bad.items())
 
 
+# Configurable refresh cadence: identical footer text in both impls.
+INTERVAL_CASES = [
+    (['-i', '3'], 'Refresh: 3s'),
+    (['--interval', '3'], 'Refresh: 3s'),
+    (['--interval=3'], 'Refresh: 3s'),
+    (['-i', '2.5'], 'Refresh: 2.5s'),
+    (['-i', '60'], 'Refresh: 60s'),     # max
+    (['-i', '0.1'], 'Refresh: 0.2s'),   # clamped up to MIN
+    (['-i', '999'], 'Refresh: 60s'),    # clamped down to MAX
+]
+
+
+def test_refresh_interval_footer():
+    bad = {}
+    for argv, expect in INTERVAL_CASES:
+        py_lines = screen_of(render_c(80, 30, args=argv), 80, 30)
+        # C is the implementation under test; assert its footer matches the
+        # expected text, then assert Python renders the same for these argv.
+        footer = next((ln for ln in py_lines if 'Refresh:' in ln), '<none>')
+        if expect not in footer:
+            bad[tuple(argv)] = f"C footer {footer.strip()!r} lacks {expect!r}"
+            continue
+        py_lines = screen_of(render_py(80, 30, args=argv), 80, 30)
+        py_footer = next((ln for ln in py_lines if 'Refresh:' in ln), '<none>')
+        if expect not in py_footer:
+            bad[tuple(argv)] = f"py footer {py_footer.strip()!r} lacks {expect!r}"
+    assert not bad, "interval footer mismatch: " + "; ".join(
+        f"{k}: {v}" for k, v in bad.items())
+
+
+def test_invalid_interval_rejected():
+    import subprocess
+    for argv in (['-i'], ['-i', 'x'], ['-i', 'abc'], ['--interval='], ['--bogus']):
+        r = subprocess.run([CBIN, *argv], capture_output=True, timeout=5)
+        assert r.returncode != 0, f"C {argv} should fail, got rc=0"
+        r = subprocess.run([sys.executable, os.path.join(REPO, 'termmon.py'),
+                            *argv], capture_output=True, timeout=5,
+                           env={**os.environ, 'TERM': 'dumb'})
+        assert r.returncode != 0, f"py {argv} should fail, got rc=0"
+
+
 def main():
     if '--show' in sys.argv:
         w = int(sys.argv[sys.argv.index('--show') + 1])
@@ -226,6 +267,19 @@ def main():
             print(f"      row {y} py|{a}|")
             print(f"           c|{b}|")
         failures += len(diffs)
+    print("\n  refresh interval footer (C vs Python):")
+    for argv, expect in INTERVAL_CASES:
+        c_footer = next((ln for ln in screen_of(render_c(80, 30, args=argv),
+                                                80, 30)
+                         if 'Refresh:' in ln), '<none>').strip()
+        p_footer = next((ln for ln in screen_of(render_py(80, 30, args=argv),
+                                                80, 30)
+                         if 'Refresh:' in ln), '<none>').strip()
+        ok = expect in c_footer and expect in p_footer and c_footer == p_footer
+        print(f"  {' '.join(argv):<22} : {'ok' if ok else 'FAIL'} "
+              f"({expect}) C|{c_footer}| P|{p_footer}|")
+        if not ok:
+            failures += 1
     print("=" * 66)
     print("GOLDEN MATCH" if failures == 0 else f"{failures} DIFF ROWS")
     return 0 if failures == 0 else 1

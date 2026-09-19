@@ -67,6 +67,7 @@ app.gpu_processes = [{
 app._stats_updater_thread = lambda: None
 termmon.psutil.process_iter = lambda *a, **k: []
 
+termmon.apply_interval_args(sys.argv[1:])
 app.run()
 '''
 
@@ -83,7 +84,7 @@ def _child_script_path():
     return path
 
 
-def spawn(cols, rows):
+def spawn(cols, rows, extra_args=()):
     """Fork termmon into a real PTY at the given size. Returns (pid, fd)."""
     script = _child_script_path()
     pid, fd = pty.fork()
@@ -92,9 +93,9 @@ def spawn(cols, rows):
         os.environ['LANG'] = 'en_US.UTF-8'
         os.environ['PYTHONIOENCODING'] = 'utf-8'
         if BIN_PATH:
-            os.execv(BIN_PATH, [BIN_PATH])
+            os.execv(BIN_PATH, [BIN_PATH, *extra_args])
         else:
-            os.execv(sys.executable, [sys.executable, script])
+            os.execv(sys.executable, [sys.executable, script, *extra_args])
         os._exit(1)
     set_size(fd, cols, rows)
     return pid, fd

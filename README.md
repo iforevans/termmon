@@ -15,7 +15,7 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
   - Sorted by VRAM usage (descending)
 - **Color-coded progress bars**: Visual feedback for resource usage
 - **Fully responsive layout**: Reflows to any terminal size (nvtop-style) — resize freely, content never wraps or overwrites itself. Degrades gracefully from ultra-wide down to ~28 columns
-- **Auto-refresh**: Updates every 1 second
+- **Auto-refresh**: Updates every second by default — configurable via `-i`/`--interval SECONDS` (0.2–60)
 - **Native C port (Linux)**: small ELF binary against `ncursesw` — no Python runtime needed, verified to render **byte-identical** to the Python reference
 - **Python reference**: `termmon.py` stays in-tree as the golden reference renderer and the macOS (Apple Silicon) path
 
@@ -58,6 +58,11 @@ python3 termmon.py
 ## Usage
 
 Simply run `termmon` and watch your system resources in real-time.
+
+### Options
+
+- `-i SECONDS`, `--interval SECONDS`, `--interval=SECONDS` — auto-refresh cadence in seconds, clamped to 0.2–60 (default 1). Example: `termmon -i 3` refreshes every 3 seconds; the footer shows the active cadence.
+- `-h`, `--help` — usage
 
 ### Keybindings
 
@@ -180,7 +185,7 @@ Below ~24 columns termmon shows a "Terminal too small" notice rather than render
 - **CPU Stats**: C reads per-core deltas from `/proc/stat`; Python uses psutil (cross-platform)
 - **Memory Stats**: Linux reads `/proc/meminfo` directly — `Cache = Buffers + Cached + SReclaimable`, `Used = Total − Free − Cache` (so Used + Cache + Free == Total); `MemAvailable` is shown beside the bar, never as a segment. Other platforms use psutil (its Linux `.cached` already folds in SReclaimable, so mixing both would double-count)
 - **Process Info**: C parses `/proc/[pid]/{stat,status,cmdline}` with jiffies-delta CPU%; Python uses psutil.Process()
-- **Refresh Rate**: 1 second (`REFRESH_INTERVAL`, both implementations)
+- **Refresh Rate**: 1 second by default, configurable with `-i`/`--interval SECONDS` (0.2–60, both implementations; `REFRESH_INTERVAL` in source)
 - **Layout**: Adaptive box width (`min(120, terminal_width - 2)`), computed bar widths, and per-section two-column/single-column breakpoints. All drawing goes through a single bounds-clipping `_safe_addstr()` helper
 - **Resize handling**: `SIGWINCH` triggers a kernel `TIOCGWINSZ` query (not the stale curses `getmaxyx()` cache), then `resizeterm()` + `clear()`
 
@@ -219,6 +224,10 @@ python3 tests/test_pty_layout.py --show 80
 The C golden harness feeds both renderers the same fixture (`TERMMON_FIXTURE=…`) and diffs the pyte-parsed screen row-for-row — the strongest guarantee the port is behaviourally identical. The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.21.0 (2026-09-19)
+- **Configurable refresh cadence**: `termmon -i SECONDS` / `--interval SECONDS` / `--interval=SECONDS` sets the auto-refresh interval (clamped to 0.2–60, default 1s). Implemented identically in both: the C port parses argv before curses init (global `g_refresh_interval` drives the main loop and the collector-thread throttle); the Python reference exposes `apply_interval_args()`. The footer renders the active cadence via `%g`/str-matching formatting (`Refresh: 3s`, `Refresh: 2.5s`). `-h`/`--help` prints usage; invalid or unknown arguments exit non-zero with a message in both implementations.
+- **New golden cases**: `tests/test_golden.py` diffs both renderers' footers under seven interval settings (int, decimal, `=` form, both clamp bounds) and asserts C and Python reject invalid intervals identically; `tests/test_layout.c` covers `fmt_interval()`.
 
 ### v1.20.0 (2026-09-19)
 - **Native C port (Linux)**: termmon is now a small C binary against `ncursesw` (`src/termmon.h`, `main.c`, `collect.c`, `layout.c`, `draw.c`) — no Python runtime. Data collection reads `/proc/stat` per-core deltas, `/proc/meminfo`, hwmon temps, and shells out to `nvidia-smi` with a poll-based deadline; GPU-process enrichment parses `/proc/[pid]` directly. The Python implementation stays in-tree as the golden reference and the macOS path.

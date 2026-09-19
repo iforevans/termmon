@@ -12,6 +12,55 @@
 static volatile sig_atomic_t g_resized = 0;
 static volatile sig_atomic_t g_sigint = 0;
 
+double g_refresh_interval = REFRESH_INTERVAL_DEFAULT;
+
+static void usage(const char *prog)
+{
+    fprintf(stderr, "Usage: %s [-i|--interval SECONDS]\n"
+                    "  Refresh cadence in seconds (%g-%g, default %g)\n",
+            prog, REFRESH_INTERVAL_MIN, REFRESH_INTERVAL_MAX,
+            REFRESH_INTERVAL_DEFAULT);
+}
+
+static int parse_args(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        const char *val;
+        if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
+            usage(argv[0]);
+            return 1;
+        }
+        if (strcmp(a, "-i") == 0 || strcmp(a, "--interval") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "%s: %s requires a value\n", a, a);
+                usage(argv[0]);
+                return -1;
+            }
+            val = argv[++i];
+        } else if (strncmp(a, "--interval=", 11) == 0) {
+            val = a + 11;
+        } else {
+            fprintf(stderr, "%s: unknown argument '%s'\n", argv[0], a);
+            usage(argv[0]);
+            return -1;
+        }
+        char *end;
+        double v = strtod(val, &end);
+        if (end == val || *end != '\0' || v != v) {
+            fprintf(stderr, "%s: invalid interval '%s'\n", argv[0], val);
+            usage(argv[0]);
+            return -1;
+        }
+        if (v < REFRESH_INTERVAL_MIN)
+            v = REFRESH_INTERVAL_MIN;
+        if (v > REFRESH_INTERVAL_MAX)
+            v = REFRESH_INTERVAL_MAX;
+        g_refresh_interval = v;
+    }
+    return 0;
+}
+
 static void on_sigwinch(int sig)
 {
     (void)sig;
@@ -55,8 +104,12 @@ static void apply_resize(WINDOW *scr)
     werase(scr);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    int pr = parse_args(argc, argv);
+    if (pr != 0)
+        return pr > 0 ? 0 : 1;
+
     setlocale(LC_ALL, "");
 
     App app;
@@ -107,7 +160,7 @@ int main(void)
             last_refresh = now;
         }
 
-        if (now - last_refresh >= REFRESH_INTERVAL) {
+        if (now - last_refresh >= g_refresh_interval) {
             last_refresh = now;
         }
 

@@ -849,8 +849,10 @@ void draw(App *app, WINDOW *scr)
     y = draw_gpu_processes_section(app, scr, y, x, height, &snap, bw);
 
     char footer[256];
+    char iv[32];
+    fmt_interval(iv, sizeof iv, g_refresh_interval);
     snprintf(footer, sizeof footer,
-             " Refresh: 1s | q:quit r:refresh h:help ←/→:process scroll ");
+             " Refresh: %ss | q:quit r:refresh h:help ←/→:process scroll ", iv);
     if (u8_len(footer) > width - 1)
         snprintf(footer, sizeof footer, " q:quit r:refresh h:help ←/→:scroll ");
     if (u8_len(footer) > width - 1)
