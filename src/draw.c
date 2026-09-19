@@ -825,7 +825,7 @@ void draw(App *app, WINDOW *scr)
 
     char title[256];
     snprintf(title, sizeof title,
-             " termmon %s - System Monitor | %s | q:quit r:refresh h:help ",
+             " termmon %s - System Monitor | %s | q:quit r:rate h:help ",
              TERMMON_VERSION, clockstr);
     if (u8_len(title) > width - 1)
         snprintf(title, sizeof title, " termmon %s | %s ", TERMMON_VERSION,
@@ -852,9 +852,9 @@ void draw(App *app, WINDOW *scr)
     char iv[32];
     fmt_interval(iv, sizeof iv, g_refresh_interval);
     snprintf(footer, sizeof footer,
-             " Refresh: %ss | q:quit r:refresh h:help ←/→:process scroll ", iv);
+             " Refresh: %ss | q:quit r:rate h:help ←/→:process scroll ", iv);
     if (u8_len(footer) > width - 1)
-        snprintf(footer, sizeof footer, " q:quit r:refresh h:help ←/→:scroll ");
+        snprintf(footer, sizeof footer, " q:quit r:rate h:help ←/→:scroll ");
     if (u8_len(footer) > width - 1)
         snprintf(footer, sizeof footer, " q:quit h:help ");
     u8_fit(footer, sizeof footer, footer, width - 1);
@@ -869,7 +869,7 @@ void show_help(App *app, WINDOW *scr)
 {
     static const char *help_lines[] = {
         " q  - Quit",
-        " r  - Refresh now",
+        " r  - Cycle refresh rate",
         " h  - Show help (this)",
         " ←→ - Scroll process table",
     };

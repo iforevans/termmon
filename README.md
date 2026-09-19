@@ -15,7 +15,7 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
   - Sorted by VRAM usage (descending)
 - **Color-coded progress bars**: Visual feedback for resource usage
 - **Fully responsive layout**: Reflows to any terminal size (nvtop-style) — resize freely, content never wraps or overwrites itself. Degrades gracefully from ultra-wide down to ~28 columns
-- **Auto-refresh**: Updates every second by default — configurable via `-i`/`--interval SECONDS` (0.2–60)
+- **Auto-refresh**: Updates every second by default — configurable at launch (`-i`/`--interval SECONDS`, 0.5–60) or interactively with `r`
 - **Native C port (Linux)**: small ELF binary against `ncursesw` — no Python runtime needed, verified to render **byte-identical** to the Python reference
 - **Python reference**: `termmon.py` stays in-tree as the golden reference renderer and the macOS (Apple Silicon) path
 
@@ -61,13 +61,13 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ### Options
 
-- `-i SECONDS`, `--interval SECONDS`, `--interval=SECONDS` — auto-refresh cadence in seconds, clamped to 0.2–60 (default 1). Example: `termmon -i 3` refreshes every 3 seconds; the footer shows the active cadence.
+- `-i SECONDS`, `--interval SECONDS`, `--interval=SECONDS` — auto-refresh cadence in seconds, clamped to 0.5–60 (default 1). Example: `termmon -i 3` refreshes every 3 seconds; the footer shows the active cadence.
 - `-h`, `--help` — usage
 
 ### Keybindings
 
 - `q` - Quit
-- `r` - Manual refresh (immediate update)
+- `r` - Cycle the refresh cadence: 0.5→1→2→5→10→30→60→0.5s (footer updates immediately)
 - `h` - Show help
 - `←` / `→` - Horizontally scroll the GPU process Command column
 
@@ -80,7 +80,7 @@ The layout is **fully responsive** — it reflows to whatever size your terminal
 At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, cores run in two columns, and GPU Util/VRAM share a row:
 
 ```
- termmon 1.20.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+ termmon 1.22.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                              │
  │────────────────────────────────────────────────────────────────────────────│
@@ -109,13 +109,13 @@ At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, 
  │────────────────────────────────────────────────────────────────────────────│
  │ 54321   iforevan 0   C       --   39506M  12.0%    7768M llama-server --hos│
  └────────────────────────────────────────────────────────────────────────────┘
- Refresh: 1s | q:quit r:refresh h:help ←/→:process scroll
+ Refresh: 1s | q:quit r:rate h:help ←/→:process scroll
 ```
 
 Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GPU title drops segments, and Util/VRAM take their own rows — no wrapping, no overwritten content:
 
 ```
- termmon 1.20.0 | 14:32:07
+ termmon 1.22.0 | 14:32:07
  ┌──────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                │
  │──────────────────────────────────────────────│
@@ -143,7 +143,7 @@ Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GP
  │──────────────────────────────────────────────│
  │ PID     USER     DEV TYPE   GPU  GPU MEM    C│
  └──────────────────────────────────────────────┘
- q:quit r:refresh h:help ←/→:scroll
+ q:quit r:rate h:help ←/→:scroll
 ```
 
 Below ~24 columns termmon shows a "Terminal too small" notice rather than rendering a mangled dashboard.
@@ -185,7 +185,7 @@ Below ~24 columns termmon shows a "Terminal too small" notice rather than render
 - **CPU Stats**: C reads per-core deltas from `/proc/stat`; Python uses psutil (cross-platform)
 - **Memory Stats**: Linux reads `/proc/meminfo` directly — `Cache = Buffers + Cached + SReclaimable`, `Used = Total − Free − Cache` (so Used + Cache + Free == Total); `MemAvailable` is shown beside the bar, never as a segment. Other platforms use psutil (its Linux `.cached` already folds in SReclaimable, so mixing both would double-count)
 - **Process Info**: C parses `/proc/[pid]/{stat,status,cmdline}` with jiffies-delta CPU%; Python uses psutil.Process()
-- **Refresh Rate**: 1 second by default, configurable with `-i`/`--interval SECONDS` (0.2–60, both implementations; `REFRESH_INTERVAL` in source)
+- **Refresh Rate**: 1 second by default — launch with `-i`/`--interval SECONDS` (0.5–60), or cycle presets (0.5/1/2/5/10/30/60s) live with the `r` key
 - **Layout**: Adaptive box width (`min(120, terminal_width - 2)`), computed bar widths, and per-section two-column/single-column breakpoints. All drawing goes through a single bounds-clipping `_safe_addstr()` helper
 - **Resize handling**: `SIGWINCH` triggers a kernel `TIOCGWINSZ` query (not the stale curses `getmaxyx()` cache), then `resizeterm()` + `clear()`
 
@@ -224,6 +224,10 @@ python3 tests/test_pty_layout.py --show 80
 The C golden harness feeds both renderers the same fixture (`TERMMON_FIXTURE=…`) and diffs the pyte-parsed screen row-for-row — the strongest guarantee the port is behaviourally identical. The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.22.0 (2026-09-19)
+- **Interactive cadence control**: the `r` key now cycles the refresh interval through presets 0.5→1→2→5→10→30→60→0.5s instead of forcing a single refresh; the footer shows the active cadence immediately (it already rendered the live interval). The pure ladder (`next_refresh_interval`) is unit-tested; golden tests press `r` in real PTYs and assert C and Python footers step identically (1 press → 2s, 2 → 5s, full loop back). Title/footer hints renamed `r:refresh` → `r:rate`; help popup line is now `r - Cycle refresh rate`. Forcing an immediate collection still happens on every `r` press (and at each new cadence); CLI `-i` remains for a fixed non-default start.
+- **Cadence floor raised 0.2s → 0.5s**: the minimum for `-i`/`--interval` (and the lowest r-cycle preset) is now 0.5s — half a second is the fastest sensible cadence for an nvidia-smi-backed dashboard.
 
 ### v1.21.0 (2026-09-19)
 - **Configurable refresh cadence**: `termmon -i SECONDS` / `--interval SECONDS` / `--interval=SECONDS` sets the auto-refresh interval (clamped to 0.2–60, default 1s). Implemented identically in both: the C port parses argv before curses init (global `g_refresh_interval` drives the main loop and the collector-thread throttle); the Python reference exposes `apply_interval_args()`. The footer renders the active cadence via `%g`/str-matching formatting (`Refresh: 3s`, `Refresh: 2.5s`). `-h`/`--help` prints usage; invalid or unknown arguments exit non-zero with a message in both implementations.

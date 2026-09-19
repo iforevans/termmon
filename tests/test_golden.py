@@ -63,7 +63,7 @@ GPU 0|NVIDIA RTX A6000|49152.0|43800.0|5352.0|80.0|59.0|110.0
 PROC 54321|iforevan|39506.0|7768.0|12.0|llama-server --host 127.0.0.1 --port 8080 -c 163840 -ngl 99 -m /home/iforevans/models/unsloth/Qwen3.6-27B-UD-Q8_K_XL.gguf -ctk q8_0 -ctv turbo4 --cache-ram 4096
 """
 
-CLOCK = re.compile(r'\d{2}:\d{2}:\d{2}')
+CLOCK = re.compile(r'\d{2}:\d{2}(?::\d{1,2})?')
 
 
 def _fixture_path():
@@ -143,7 +143,8 @@ def screen_of(data, cols, rows):
     screen = pyte.Screen(cols, rows)
     stream = pyte.Stream(screen)
     stream.feed(data.decode('utf-8', errors='replace'))
-    return [CLOCK.sub('TIME', line) for line in screen.display]
+    return [CLOCK.sub(lambda m: ' ' * len(m.group()), line)
+            for line in screen.display]
 
 
 def compare(cols, rows, show=False):
@@ -203,7 +204,7 @@ INTERVAL_CASES = [
     (['--interval=3'], 'Refresh: 3s'),
     (['-i', '2.5'], 'Refresh: 2.5s'),
     (['-i', '60'], 'Refresh: 60s'),     # max
-    (['-i', '0.1'], 'Refresh: 0.2s'),   # clamped up to MIN
+    (['-i', '0.1'], 'Refresh: 0.5s'),   # clamped up to MIN
     (['-i', '999'], 'Refresh: 60s'),    # clamped down to MAX
 ]
 
@@ -223,6 +224,44 @@ def test_refresh_interval_footer():
         if expect not in py_footer:
             bad[tuple(argv)] = f"py footer {py_footer.strip()!r} lacks {expect!r}"
     assert not bad, "interval footer mismatch: " + "; ".join(
+        f"{k}: {v}" for k, v in bad.items())
+
+
+def _footer_after_cycles(render, cols, rows, times):
+    pid, fd = (pty.fork())
+    if pid == 0:
+        os.environ['TERM'] = 'xterm-256color'
+        os.environ['LANG'] = 'en_US.UTF-8'
+        script = H._child_script_path()
+        if render == 'c':
+            os.environ['TERMMON_FIXTURE'] = _fixture_path()
+            os.execv(CBIN, [CBIN])
+        else:
+            os.execv(sys.executable, [sys.executable, script])
+        os._exit(1)
+    H.set_size(fd, cols, rows)
+    data = drain_to_boundary(fd, max_seconds=1.8, min_seconds=1.2)
+    for _ in range(times):
+        os.write(fd, b'r')
+        time.sleep(0.15)
+    data += drain_to_boundary(fd, max_seconds=2.0, min_seconds=0.5)
+    _finish(pid, fd, data)
+    lines = screen_of(data, cols, rows)
+    return next((ln for ln in lines if 'Refresh:' in ln), '<none>').strip()
+
+
+def test_refresh_cycle_key():
+    # Ladder is 0.5->1->2->5->10->30->60->(wrap). Start is default 1s
+    # (index 1), so after `times` presses the index is (1 + times) % 7.
+    ladder = ['0.5', '1', '2', '5', '10', '30', '60']
+    bad = {}
+    for times in (1, 2, 3, 6, 7):   # 7 presses: full loop back to 1s
+        expect = f"Refresh: {ladder[(1 + times) % 7]}s"
+        c = _footer_after_cycles('c', 80, 30, times)
+        p = _footer_after_cycles('p', 80, 30, times)
+        if expect not in c or expect not in p:
+            bad[times] = f"want {expect!r}: C|{c}| P|{p}|"
+    assert not bad, "r-cycle mismatch: " + "; ".join(
         f"{k}: {v}" for k, v in bad.items())
 
 
@@ -278,6 +317,16 @@ def main():
         ok = expect in c_footer and expect in p_footer and c_footer == p_footer
         print(f"  {' '.join(argv):<22} : {'ok' if ok else 'FAIL'} "
               f"({expect}) C|{c_footer}| P|{p_footer}|")
+        if not ok:
+            failures += 1
+    print("\n  r-key cadence cycle (C vs Python, from default 1s):")
+    for times, expect in ((1, 'Refresh: 2s'), (2, 'Refresh: 5s'),
+                          (6, 'Refresh: 0.5s'), (7, 'Refresh: 1s')):
+        c = _footer_after_cycles('c', 80, 30, times)
+        p = _footer_after_cycles('p', 80, 30, times)
+        ok = expect in c and expect in p and c == p
+        print(f"  r x{times:<3}              : {'ok' if ok else 'FAIL'} "
+              f"({expect}) C|{c}| P|{p}|")
         if not ok:
             failures += 1
     print("=" * 66)

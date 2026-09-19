@@ -5,14 +5,14 @@
 #include <pthread.h>
 #include <time.h>
 
-#define TERMMON_VERSION "1.21.0"
+#define TERMMON_VERSION "1.22.0"
 
 #define BAR_WIDTH 20
 #define MIN_BAR_WIDTH 5
 #define MAX_BOX_WIDTH 120
 #define MIN_BOX_WIDTH 24
 #define REFRESH_INTERVAL_DEFAULT 1.0
-#define REFRESH_INTERVAL_MIN 0.2
+#define REFRESH_INTERVAL_MIN 0.5
 #define REFRESH_INTERVAL_MAX 60.0
 
 extern double g_refresh_interval;
@@ -126,6 +126,7 @@ int gpu_process_fixed_prefix(char *dst, size_t cap, const GpuProc *p);
 int gpu_process_header(char *dst, size_t cap);
 int gpu_process_header_len(void);
 void fmt_interval(char *dst, size_t cap, double v);
+double next_refresh_interval(double cur);
 int max_process_scroll(int bw, const GpuProc *procs, int n_procs);
 
 void draw(App *app, WINDOW *scr);

@@ -301,3 +301,14 @@ void fmt_interval(char *dst, size_t cap, double v)
 {
     snprintf(dst, cap, "%g", v);
 }
+
+double next_refresh_interval(double cur)
+{
+    static const double ladder[] = { 0.5, 1, 2, 5, 10, 30, 60 };
+    size_t n = sizeof ladder / sizeof ladder[0];
+    for (size_t i = 0; i < n; i++) {
+        if (ladder[i] > cur)
+            return ladder[i];
+    }
+    return ladder[0];
+}

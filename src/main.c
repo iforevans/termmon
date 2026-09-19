@@ -178,6 +178,7 @@ int main(int argc, char **argv)
             break;
         case 'r':
         case 'R':
+            g_refresh_interval = next_refresh_interval(g_refresh_interval);
             stats_request(&app.stats);
             break;
         case 'h':

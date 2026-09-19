@@ -219,6 +219,20 @@ static void test_fmt_interval(void)
     CHECK(strcmp(b, "60") == 0);
 }
 
+static void test_next_refresh_interval(void)
+{
+    CHECK(next_refresh_interval(1.0) == 2.0);
+    CHECK(next_refresh_interval(2.0) == 5.0);
+    CHECK(next_refresh_interval(5.0) == 10.0);
+    CHECK(next_refresh_interval(10.0) == 30.0);
+    CHECK(next_refresh_interval(30.0) == 60.0);
+    CHECK(next_refresh_interval(60.0) == 0.5);  /* wraps to the floor */
+    CHECK(next_refresh_interval(0.5) == 1.0);
+    CHECK(next_refresh_interval(0.2) == 0.5);   /* below ladder */
+    CHECK(next_refresh_interval(2.5) == 5.0);   /* custom value */
+    CHECK(next_refresh_interval(59.9) == 60.0);
+}
+
 int main(void)
 {
     test_utf8_helpers();
@@ -229,6 +243,7 @@ int main(void)
     test_proc_command();
     test_process_table();
     test_fmt_interval();
+    test_next_refresh_interval();
     if (failures == 0) {
         printf("layout unit tests: all passed\n");
         return 0;

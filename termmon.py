@@ -24,11 +24,11 @@ Features:
     - Instant scroll response via non-blocking stats updates
 
 Usage:
-    termmon
+    termmon [-i|--interval SECONDS]
 
 Keybindings:
     q - Quit
-    r - Refresh now
+    r - Cycle refresh rate (0.5/1/2/5/10/30/60s)
     h - Show help
     ←/→ - Scroll GPU process command column
 
@@ -72,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.21.0"
+__version__ = "1.22.0"
 __author__ = "Ifor Evans"
 
 
@@ -82,7 +82,7 @@ MIN_BAR_WIDTH = 5      # Bars never shrink below this before layout switches mod
 MAX_BOX_WIDTH = 120    # Cap so the dashboard stays readable on ultra-wide terminals
 MIN_BOX_WIDTH = 24     # Below this the terminal is too small to render anything useful
 REFRESH_INTERVAL = 1   # Seconds between auto-refreshes
-REFRESH_INTERVAL_MIN = 0.2
+REFRESH_INTERVAL_MIN = 0.5
 REFRESH_INTERVAL_MAX = 60.0
 
 
@@ -113,6 +113,25 @@ def apply_interval_args(argv: list) -> None:
             raise SystemExit(f"error: invalid interval {val!r}")
         v = min(max(v, REFRESH_INTERVAL_MIN), REFRESH_INTERVAL_MAX)
         REFRESH_INTERVAL = int(v) if v.is_integer() else v
+
+
+REFRESH_LADDER = [0.5, 1, 2, 5, 10, 30, 60]
+
+
+def next_refresh_interval(cur) -> float:
+    """Next preset cadence strictly above cur, wrapping to the lowest
+    preset (0.5s). Mirrors the C next_refresh_interval() used by the r key."""
+    for v in REFRESH_LADDER:
+        if v > cur:
+            return v
+    return REFRESH_LADDER[0]
+
+
+def advance_refresh_interval() -> float:
+    """Advance the live cadence one preset and return it (r key)."""
+    global REFRESH_INTERVAL
+    REFRESH_INTERVAL = next_refresh_interval(REFRESH_INTERVAL)
+    return REFRESH_INTERVAL
 
 # Responsive breakpoints (box width in columns). Derived from measured format
 # string lengths — see _draw_*_section for the per-section overhead arithmetic.
@@ -1229,7 +1248,7 @@ class TermMon:
 
         help_lines = [
             " q  - Quit",
-            " r  - Refresh now",
+            " r  - Cycle refresh rate",
             " h  - Show help (this)",
             " ←→ - Scroll process table",
         ]
@@ -1919,7 +1938,7 @@ class TermMon:
         self._box_width = max(MIN_BOX_WIDTH, min(MAX_BOX_WIDTH, width - 2))
 
         # Title
-        title = f" termmon {__version__} - System Monitor | {datetime.now().strftime('%H:%M:%S')} | q:quit r:refresh h:help "
+        title = f" termmon {__version__} - System Monitor | {datetime.now().strftime('%H:%M:%S')} | q:quit r:rate h:help "
         if len(title) > width - 1:
             title = f" termmon {__version__} | {datetime.now().strftime('%H:%M:%S')} "
         self._safe_addstr(
@@ -1945,9 +1964,9 @@ class TermMon:
         y = self._draw_gpu_processes_section(stdscr, y, x, height, snapshot, self._box_width)
 
         # Footer
-        footer = f" Refresh: {REFRESH_INTERVAL}s | q:quit r:refresh h:help ←/→:process scroll "
+        footer = f" Refresh: {REFRESH_INTERVAL}s | q:quit r:rate h:help ←/→:process scroll "
         if len(footer) > width - 1:
-            footer = " q:quit r:refresh h:help ←/→:scroll "
+            footer = " q:quit r:rate h:help ←/→:scroll "
         if len(footer) > width - 1:
             footer = " q:quit h:help "
         self._safe_addstr(
@@ -2025,6 +2044,7 @@ class TermMon:
                 if key == ord('q') or key == ord('Q'):
                     self.running = False
                 elif key == ord('r') or key == ord('R'):
+                    advance_refresh_interval()
                     self.update_stats()
                 elif key == ord('h') or key == ord('H'):
                     self._show_help(stdscr)
