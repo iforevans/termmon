@@ -72,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.19.0"
+__version__ = "1.20.0"
 __author__ = "Ifor Evans"
 
 
@@ -81,7 +81,7 @@ BAR_WIDTH = 20         # Maximum width of progress bars
 MIN_BAR_WIDTH = 5      # Bars never shrink below this before layout switches mode
 MAX_BOX_WIDTH = 120    # Cap so the dashboard stays readable on ultra-wide terminals
 MIN_BOX_WIDTH = 24     # Below this the terminal is too small to render anything useful
-REFRESH_INTERVAL = 2   # Seconds between auto-refreshes
+REFRESH_INTERVAL = 1   # Seconds between auto-refreshes
 
 # Responsive breakpoints (box width in columns). Derived from measured format
 # string lengths — see _draw_*_section for the per-section overhead arithmetic.

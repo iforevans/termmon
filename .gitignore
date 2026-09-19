@@ -13,3 +13,6 @@ build/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+termmon
+tests/test_layout
+*.o

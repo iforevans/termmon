@@ -9,7 +9,8 @@ This catches what MockStdscr cannot: real curses line-wrapping behaviour,
 scroll-on-last-cell, and stale content left over after a resize.
 
 Usage:
-    python3 tests/test_pty_layout.py            # run all sizes
+    python3 tests/test_pty_layout.py            # run all sizes (Python)
+    python3 tests/test_pty_layout.py --bin ./termmon   # drive the C port
     python3 tests/test_pty_layout.py --show 80  # print the 80-col screen
 """
 import os
@@ -25,6 +26,9 @@ import termios
 import pyte
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Path to a compiled binary to drive instead of termmon.py (--bin).
+BIN_PATH = None
 
 FAKE_SETUP = r'''
 import sys, threading
@@ -87,7 +91,10 @@ def spawn(cols, rows):
         os.environ['TERM'] = 'xterm-256color'
         os.environ['LANG'] = 'en_US.UTF-8'
         os.environ['PYTHONIOENCODING'] = 'utf-8'
-        os.execv(sys.executable, [sys.executable, script])
+        if BIN_PATH:
+            os.execv(BIN_PATH, [BIN_PATH])
+        else:
+            os.execv(sys.executable, [sys.executable, script])
         os._exit(1)
     set_size(fd, cols, rows)
     return pid, fd
@@ -181,6 +188,9 @@ def render(cols, rows, resize_from=None, show=False):
 
 
 def main():
+    global BIN_PATH
+    if '--bin' in sys.argv:
+        BIN_PATH = os.path.abspath(sys.argv[sys.argv.index('--bin') + 1])
     show_width = None
     if '--show' in sys.argv:
         show_width = int(sys.argv[sys.argv.index('--show') + 1])

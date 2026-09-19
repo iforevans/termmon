@@ -15,19 +15,22 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
   - Sorted by VRAM usage (descending)
 - **Color-coded progress bars**: Visual feedback for resource usage
 - **Fully responsive layout**: Reflows to any terminal size (nvtop-style) — resize freely, content never wraps or overwrites itself. Degrades gracefully from ultra-wide down to ~28 columns
-- **Auto-refresh**: Updates every 2 seconds
-- **Cross-platform**: Linux (NVIDIA GPUs) and macOS (Apple Silicon GPUs)
-- **Pure Python**: Minimal external dependencies
+- **Auto-refresh**: Updates every 1 second
+- **Native C port (Linux)**: small ELF binary against `ncursesw` — no Python runtime needed, verified to render **byte-identical** to the Python reference
+- **Python reference**: `termmon.py` stays in-tree as the golden reference renderer and the macOS (Apple Silicon) path
 
 ## Requirements
 
-- Python 3.9+
-- `psutil` (`pip3 install psutil`)
-
-### Linux
+### C port (Linux, default)
+- `gcc` (or any C11 compiler) with `ncursesw` (`pkg-config` locates `ncursesw`, falling back to `ncurses`)
 - NVIDIA drivers with `nvidia-smi` (for GPU monitoring)
 
-### macOS (Apple Silicon)
+### Python reference (Linux + macOS)
+- Python 3.9+
+- `psutil` (`pip3 install psutil`)
+- Linux: NVIDIA drivers with `nvidia-smi` (for GPU monitoring)
+
+### Python on macOS (Apple Silicon)
 - `macmon` — **required** for accurate GPU utilization/power without sudo
   - Install: `cargo install macmon` (requires Rust toolchain)
   - Or build from source: `git clone https://github.com/vladkens/macmon && cd macmon && cargo build --release`
@@ -37,15 +40,19 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
 ## Installation
 
 ```bash
-# Clone or copy termmon.py anywhere
 cd ~/dev/termmon
 
-# Run directly
-python3 termmon.py
+# Build the native C port (Linux)
+make            # -> ./termmon
 
-# Or create a launcher
-ln -s ~/dev/termmon/termmon.py ~/bin/termmon
+# Install to ~/bin (backs up any previous ~/bin/termmon as termmon.py.bak)
+make install    # -> ~/bin/termmon
 termmon
+```
+
+```bash
+# Or run the Python reference directly (also the macOS path)
+python3 termmon.py
 ```
 
 ## Usage
@@ -59,7 +66,7 @@ Simply run `termmon` and watch your system resources in real-time.
 - `h` - Show help
 - `←` / `→` - Horizontally scroll the GPU process Command column
 
-**Auto-refresh**: Every 2 seconds (no action needed)
+**Auto-refresh**: Every 1 second (no action needed)
 
 ## Display Layout
 
@@ -68,7 +75,7 @@ The layout is **fully responsive** — it reflows to whatever size your terminal
 At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, cores run in two columns, and GPU Util/VRAM share a row:
 
 ```
- termmon 1.19.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
+ termmon 1.20.0 - System Monitor | 14:32:07 | q:quit r:refresh h:help
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                              │
  │────────────────────────────────────────────────────────────────────────────│
@@ -97,13 +104,13 @@ At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, 
  │────────────────────────────────────────────────────────────────────────────│
  │ 54321   iforevan 0   C       --   39506M  12.0%    7768M llama-server --hos│
  └────────────────────────────────────────────────────────────────────────────┘
- Refresh: 2s | q:quit r:refresh h:help ←/→:process scroll
+ Refresh: 1s | q:quit r:refresh h:help ←/→:process scroll
 ```
 
 Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GPU title drops segments, and Util/VRAM take their own rows — no wrapping, no overwritten content:
 
 ```
- termmon 1.19.0 | 14:32:07
+ termmon 1.20.0 | 14:32:07
  ┌──────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                │
  │──────────────────────────────────────────────│
@@ -164,40 +171,61 @@ Below ~24 columns termmon shows a "Terminal too small" notice rather than render
 
 ## Technical Details
 
-- **Built with**: Python + curses + psutil
-- **Dependencies**: `psutil` (cross-platform system stats)
-- **Platform detection**: Auto-detects Linux (NVIDIA) or macOS (Apple Silicon)
+- **Built with**: C + ncursesw (native Linux port, `src/`); the Python reference uses curses + psutil (`termmon.py`)
+- **Dependencies**: C build: a C11 compiler + ncursesw (auto-detected via `pkg-config`); Python reference: `psutil`
+- **Golden reference testing**: the C renderer is verified byte-identical to the Python renderer on frozen data (`tests/test_golden.py`)
+- **Platform detection**: Auto-detects Linux (NVIDIA) or macOS (Apple Silicon) — macOS runs the Python reference; the C port is Linux-only
 - **GPU Detection**: `nvidia-smi` on Linux; `macmon` (preferred), `socpwrbud`, or `powermetrics` + `system_profiler` on macOS
 - **macOS GPU**: Three-tier fallback — `macmon` (actively maintained, no sudo), `socpwrbud` (archived, no sudo), `powermetrics` (requires sudo on macOS 13+)
-- **CPU Stats**: psutil (cross-platform, replaces `/proc/stat`)
+- **CPU Stats**: C reads per-core deltas from `/proc/stat`; Python uses psutil (cross-platform)
 - **Memory Stats**: Linux reads `/proc/meminfo` directly — `Cache = Buffers + Cached + SReclaimable`, `Used = Total − Free − Cache` (so Used + Cache + Free == Total); `MemAvailable` is shown beside the bar, never as a segment. Other platforms use psutil (its Linux `.cached` already folds in SReclaimable, so mixing both would double-count)
-- **Process Info**: psutil.Process() (cross-platform, replaces `/proc/[pid]`)
-- **Refresh Rate**: 2 seconds (configurable in source)
+- **Process Info**: C parses `/proc/[pid]/{stat,status,cmdline}` with jiffies-delta CPU%; Python uses psutil.Process()
+- **Refresh Rate**: 1 second (`REFRESH_INTERVAL`, both implementations)
 - **Layout**: Adaptive box width (`min(120, terminal_width - 2)`), computed bar widths, and per-section two-column/single-column breakpoints. All drawing goes through a single bounds-clipping `_safe_addstr()` helper
 - **Resize handling**: `SIGWINCH` triggers a kernel `TIOCGWINSZ` query (not the stale curses `getmaxyx()` cache), then `resizeterm()` + `clear()`
 
 ## Testing
 
-Three harnesses cover the memory bar and layout; all must be clean after any change to the draw path.
+One command runs everything:
 
 ```bash
+make test
+```
+
+Which covers four harnesses; all must be clean after any change to the draw path.
+
+```bash
+# C unit tests — pure layout math (bar widths, largest-remainder stacking,
+# UTF-8 clipping, process-table geometry): tests/test_layout.c
+./tests/test_layout
+
+# Golden screen diff — C port vs Python oracle on identical frozen data
+# (9 dashboard sizes 28–120 cols + 5 help-popup sizes, byte-identical)
+python3 tests/test_golden.py
+
 # MockStdscr sweep — 2,820 configs (widths 20-160 x 5 heights x NVIDIA/UMA x 2 scroll offsets)
 python3 tests/test_responsive_layout.py
 
 # Stacked Used/Cache/Free accounting, largest-remainder rounding, live meminfo
 python3 tests/test_mem_stacking.py
 
-# Render specific widths for visual inspection
-python3 tests/test_responsive_layout.py --render 80,50,30
-
-# Real PTY + curses, parsed with pyte — 9 static sizes and 5 live SIGWINCH resizes
-python3 tests/test_pty_layout.py          # requires: pip3 install pyte
+# Real PTY + curses, parsed with pyte — 9 static sizes and 5 live SIGWINCH
+# resizes; drives the Python oracle by default or any binary via --bin
+python3 tests/test_pty_layout.py                    # requires: pip3 install pyte
+python3 tests/test_pty_layout.py --bin ./termmon    # the C port, live data
 python3 tests/test_pty_layout.py --show 80
 ```
 
-The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
+The C golden harness feeds both renderers the same fixture (`TERMMON_FIXTURE=…`) and diffs the pyte-parsed screen row-for-row — the strongest guarantee the port is behaviourally identical. The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.20.0 (2026-09-19)
+- **Native C port (Linux)**: termmon is now a small C binary against `ncursesw` (`src/termmon.h`, `main.c`, `collect.c`, `layout.c`, `draw.c`) — no Python runtime. Data collection reads `/proc/stat` per-core deltas, `/proc/meminfo`, hwmon temps, and shells out to `nvidia-smi` with a poll-based deadline; GPU-process enrichment parses `/proc/[pid]` directly. The Python implementation stays in-tree as the golden reference and the macOS path.
+- **Byte-identical rendering (verified)**: `tests/test_golden.py` drives both renderers with identical frozen stats (`TERMMON_FIXTURE`) in real PTYs and diffs the pyte-parsed screen — all 9 dashboard sizes (28–120 cols) and 5 help-popup sizes (including the silently-skipped tiny case) match row-for-row. Layout math is unit-tested in `tests/test_layout.c`.
+- **1s refresh cadence**: `REFRESH_INTERVAL` halved from 2s to 1s in both implementations (main loop, collector thread throttle, and footer text).
+- **Fidelity fixes found by the golden gate**: `wclear`→`werase` (clear-on-redraw caused a 35x output storm vs the Python diff-updates), codepoint-exact UTF-8 clipping at the box's right edge, legend separator truncation, `Refresh: 2s` string, `Power: …W` spacing.
+- **Build & install**: `make` (zero warnings under `-Wall -Wextra`), `make install` to `~/bin/termmon` (backs up the previous binary as `termmon.py.bak`), `make uninstall` restores it. `make test` runs unit + golden + PTY suites against both implementations.
 
 ### v1.19.0 (2026-09-11)
 - **Stacked Used/Cache/Free RAM bar**: the single system-memory bar is now one stacked bar of three non-overlapping, colour-coded segments — 🟢 Used (green), 🔵 Cache (cyan), ⚪ Free (white) — with a colour-keyed legend giving each amount in GiB (inline beside the bar when it fits, otherwise on its own row), plus a `Total: … | Available: …` row and the swap bar. The point: memory held for mmap/file caching is now visible. A llama-server host could previously headline ~18 GiB "used" while ~90 GiB sat in buffers/cache.
