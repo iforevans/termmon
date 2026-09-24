@@ -6,7 +6,7 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
 
 ## Features
 
-- **System Memory**: One stacked RAM bar with non-overlapping Used / Cache / Free segments (GiB legend inline), so the ~90 GB hiding in buffers/file-cache is visible; Total + the kernel's Available shown separately, plus a swap bar
+- **System Memory**: One stacked RAM bar with non-overlapping Used / Cache / Free segments (GB legend inline), so the ~90 GB hiding in buffers/file-cache is visible; Total + the kernel's Available shown separately, plus a swap bar
 - **CPU Usage**: Overall and per-core real-time utilization
 - **CPU Temperature**: Package temperature (°C) via psutil sensor detection
 - **NVIDIA GPU Monitoring**: VRAM usage, GPU utilization, temperature, power draw
@@ -81,12 +81,12 @@ The layout is **fully responsive** — it reflows to whatever size your terminal
 At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, cores run in two columns, and GPU Util/VRAM share a row:
 
 ```
- termmon 1.23.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
+ termmon 1.24.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                              │
  │────────────────────────────────────────────────────────────────────────────│
- │ Mem: ████████████████ Used:  12.5 GiB | Cache:   2.4 GiB | Free:   0.5 GiB │
- │ Total:   15.4 GiB | Available:    2.9 GiB                                  │
+ │ Mem: ███████████████████ Used:  12.5 GB | Cache:   2.4 GB | Free:   0.5 GB │
+ │ Total:   15.4 GB | Available:    2.9 GB                                    │
  │ Swap:████████████░░░░░░░░  2.7/ 4.3GB  62.5%                               │
  └────────────────────────────────────────────────────────────────────────────┘
  ┌────────────────────────────────────────────────────────────────────────────┐
@@ -116,12 +116,12 @@ At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, 
 Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GPU title drops segments, and Util/VRAM take their own rows — no wrapping, no overwritten content:
 
 ```
- termmon 1.23.0 | 14:32:07
+ termmon 1.24.0 | 14:32:07
  ┌──────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                │
  │──────────────────────────────────────────────│
  │ Mem: █████████████ U 12.5 | C  2.4 | F  0.5G │
- │ Total:   15.4 GiB | Available:    2.9 GiB    │
+ │ Total:   15.4 GB | Available:    2.9 GB      │
  │ Swap:███████████░░░░░░░░  2.7/ 4.3GB  62.5%  │
  └──────────────────────────────────────────────┘
  ┌──────────────────────────────────────────────┐
@@ -225,6 +225,9 @@ python3 tests/test_pty_layout.py --show 80
 The C golden harness feeds both renderers the same fixture (`TERMMON_FIXTURE=…`) and diffs the pyte-parsed screen row-for-row — the strongest guarantee the port is behaviourally identical. The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.24.0 (2026-09-24)
+- **Memory labels: GiB → GB**: the stacked-RAM legend (`Used: … GB | Cache: … GB | Free: … GB`) and the `Total: … GB | Available: … GB` row now read GB, matching the dashboard's existing GB convention (VRAM/swap already display GB). Labels only — the underlying values are unchanged binary quantities (KiB/1024²). Identical in both implementations; golden tests confirm C and Python still render byte-for-byte the same.
 
 ### v1.23.0 (2026-09-24)
 - **Native macOS (Apple Silicon) support in the C port**: `collect.c` now compiles and runs on Darwin — the binary is no longer Linux-only. System stats: CPU% from `host_processor_info` per-core tick deltas; memory/swap from `hw.memsize` + `host_statistics64` + `vm.swapusage`, mirroring psutil's macOS accounting (`Used = active + wired`, `Free = free_count`, cache absorbs the remainder so Used + Cache + Free == Total; values converted bytes→GiB, verified against psutil live). Apple GPU: two-tier `macmon` → `powermetrics` for util/power/temp, GPU model via `hw.gpu.model` with one-shot `system_profiler` fallback for the chip name + core count (`spdisplays_chipset`/`sppci_cores`), one-shot JSON extractors (no parser dependency). GPU processes: top-N by host RSS (UMA proxy, no privileged per-process VRAM query), user/name via `proc_pidinfo(PROC_PIDTASKALLINFO)`, args via `KERN_PROCARGS2`, CPU% via mach-tick deltas seeded across samples. UMA-aware rendering: `Apple GPU (N-core GPU)` title, "UMA: shared w/ system memory" in place of the VRAM bar, `gpu_backend_apple()` drives the section title and no-data message. NVIDIA/`/proc` paths untouched behind `#if !defined(__APPLE__)`; golden tests still exercise the Linux path. Verified live on M-series: memory matches psutil, macmon reads flow in, `mlx-serve` listed with user/host-mem/CPU%.

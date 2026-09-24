@@ -12,7 +12,7 @@ and GPU/VRAM usage from one window while testing local AI models on an
 RTX 3090/24GB, now running on RTX A6000/48GB.
 
 Features:
-    - System memory monitoring: stacked Used/Cache/Free RAM bar (GiB) + swap
+    - System memory monitoring: stacked Used/Cache/Free RAM bar (GB) + swap
     - Overall and per-core CPU utilization
     - CPU temperature (°C)
     - NVIDIA GPU monitoring on Linux (VRAM, utilization, temperature, power)
@@ -72,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.23.0"
+__version__ = "1.24.0"
 __author__ = "Ifor Evans"
 
 
@@ -961,7 +961,7 @@ class TermMon:
     @staticmethod
     def _account_meminfo_gib(fields: Dict[str, int]) -> Dict[str, float]:
         """
-        Turn raw meminfo KiB counters into the stacked-bar categories (GiB).
+        Turn raw meminfo KiB counters into the stacked-bar categories (GB).
 
           Total = MemTotal
           Free  = MemFree
@@ -1161,7 +1161,7 @@ class TermMon:
     @staticmethod
     def _mem_segments(sysdata: Dict[str, Any]) -> Tuple[float, float, float, float]:
         """
-        Return (used, cache, free, total) GiB for the stacked RAM bar.
+        Return (used, cache, free, total) GB for the stacked RAM bar.
 
         Defensive against missing/partial keys: the Free segment absorbs any
         residual so Used + Cache + Free == Total always holds, and the bar
@@ -1330,7 +1330,7 @@ class TermMon:
         (green), Cache (cyan) and Free (white) — sized so Used + Cache +
         Free == Total, making the memory held for mmap/file caching visible
         instead of hidden inside "used". A colour-keyed legend gives each
-        amount in GiB (inline beside the bar when it fits, else on its own
+        amount in GB (inline beside the bar when it fits, else on its own
         row). Total and the kernel's Available estimate get their own row:
         Available spans the bar's categories, so it is never a fourth
         segment. Swap keeps its own row. Rows degrade by width (shorter
@@ -1382,7 +1382,7 @@ class TermMon:
 
         # Legend candidates, longest first; each becomes colour-keyed parts.
         legend_specs = (
-            lambda: (f"Used: {used_gb:5.1f} GiB", f"Cache: {cache_gb:5.1f} GiB", f"Free: {free_gb:5.1f} GiB"),
+            lambda: (f"Used: {used_gb:5.1f} GB", f"Cache: {cache_gb:5.1f} GB", f"Free: {free_gb:5.1f} GB"),
             lambda: (f"Used {used_gb:5.1f}G", f"Cache {cache_gb:5.1f}G", f"Free {free_gb:5.1f}G"),
             lambda: (f"U {used_gb:4.1f}", f"C {cache_gb:4.1f}", f"F {free_gb:4.1f}G"),
             lambda: (f"U{used_gb:3.1f}", f"C{cache_gb:3.1f}", f"F{free_gb:3.1f}"),
@@ -1433,7 +1433,7 @@ class TermMon:
         # Total/Available row — deliberately apart from the bar: Available is
         # the kernel's overlapping estimate, not a fourth stacked segment.
         summary_specs = (
-            lambda: f"Total: {total_gb:6.1f} GiB | Available: {avail_gb:6.1f} GiB",
+            lambda: f"Total: {total_gb:6.1f} GB | Available: {avail_gb:6.1f} GB",
             lambda: f"Total: {total_gb:5.1f}G | Available: {avail_gb:5.1f}G",
             lambda: f"Total {total_gb:5.1f}G | Avail {avail_gb:5.1f}G",
             lambda: f"T {total_gb:4.1f}G A {avail_gb:4.1f}G",

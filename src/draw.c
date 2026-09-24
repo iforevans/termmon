@@ -191,9 +191,9 @@ static void legend_spec(int which, const MemSegs *m, char out[3][64])
 {
     switch (which) {
     case 0:
-        snprintf(out[0], 64, "Used: %5.1f GiB", m->used);
-        snprintf(out[1], 64, "Cache: %5.1f GiB", m->cache);
-        snprintf(out[2], 64, "Free: %5.1f GiB", m->free);
+        snprintf(out[0], 64, "Used: %5.1f GB", m->used);
+        snprintf(out[1], 64, "Cache: %5.1f GB", m->cache);
+        snprintf(out[2], 64, "Free: %5.1f GB", m->free);
         break;
     case 1:
         snprintf(out[0], 64, "Used %5.1fG", m->used);
@@ -322,7 +322,7 @@ static int draw_memory_section(App *app, WINDOW *scr, int y, int x, int height,
     }
 
     char summ[4][128];
-    snprintf(summ[0], 128, "Total: %6.1f GiB | Available: %6.1f GiB", m.total,
+    snprintf(summ[0], 128, "Total: %6.1f GB | Available: %6.1f GB", m.total,
              avail_gb);
     snprintf(summ[1], 128, "Total: %5.1fG | Available: %5.1fG", m.total,
              avail_gb);
