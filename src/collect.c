@@ -1,3 +1,7 @@
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE 1
+#endif
+
 #include "termmon.h"
 
 #include <ctype.h>
@@ -12,6 +16,22 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#if defined(__APPLE__)
+#include <libproc.h>
+#include <mach/mach.h>
+#include <mach/machine.h>
+#include <mach/mach_time.h>
+#include <sys/sysctl.h>
+
+static void mac_cpu_pct_fill(SysData *s);
+static void mac_mem_swap(SysData *s);
+static void mac_collect_gpus(Gpu *gpus, int *n_gpus, GpuProc *procs,
+                             int *n_procs);
+static int mac_apple_gpu(void);
+#endif
+
+#if !defined(__APPLE__)
 
 static char *trim(char *s)
 {
@@ -293,13 +313,22 @@ static double collect_cpu_temp(void)
     return -1.0;
 }
 
+#endif /* !__APPLE__ */
+
 void collect_sys(SysData *s)
 {
+#if defined(__APPLE__)
+    mac_cpu_pct_fill(s);
+    mac_mem_swap(s);
+    s->has_temp = 0;
+    s->cpu_temp = 0.0;
+#else
     cpu_pct_fill(s);
     collect_mem_swap(s);
     double t = collect_cpu_temp();
     s->has_temp = t >= 0.0;
     s->cpu_temp = t >= 0.0 ? t : 0.0;
+#endif
 }
 
 /* ---------------- external commands ---------------- */
@@ -382,6 +411,553 @@ read_done:
         return -1;
     return (int)len;
 }
+
+/* ---------------- macOS (Darwin) collection ---------------- */
+
+#if defined(__APPLE__)
+
+typedef struct {
+    unsigned long long total;
+    unsigned long long idle;
+    int have;
+} MacCpuPrev;
+
+static MacCpuPrev g_mac_cpu_prev[MAX_CORES];
+
+static void mac_cpu_pct_fill(SysData *s)
+{
+    natural_t num_cpus = 0;
+    processor_info_array_t cpu_info = NULL;
+    mach_msg_type_number_t count = 0;
+    kern_return_t kr = host_processor_info(mach_host_self(),
+                                           PROCESSOR_CPU_LOAD_INFO,
+                                           &num_cpus, &cpu_info, &count);
+    if (kr != KERN_SUCCESS || num_cpus == 0)
+        return;
+    int n = (int)num_cpus;
+    if (n > MAX_CORES)
+        n = MAX_CORES;
+
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        const natural_t *ticks =
+            (const natural_t *)&cpu_info[i * CPU_STATE_MAX];
+        unsigned long long idle = ticks[CPU_STATE_IDLE];
+        unsigned long long total = 0;
+        for (int j = 0; j < CPU_STATE_MAX; j++)
+            total += ticks[j];
+
+        double pct = 0.0;
+        MacCpuPrev *pr = &g_mac_cpu_prev[i];
+        if (pr->have && total >= pr->total) {
+            unsigned long long dt = total - pr->total;
+            unsigned long long di = idle - pr->idle;
+            if (dt > 0) {
+                pct = 100.0 * (double)(dt - di) / (double)dt;
+                if (pct < 0.0)
+                    pct = 0.0;
+                if (pct > 100.0)
+                    pct = 100.0;
+            }
+        }
+        pr->total = total;
+        pr->idle = idle;
+        pr->have = 1;
+
+        s->per_core[i] = pct;
+        sum += pct;
+    }
+    s->core_count = n;
+    s->cpu_usage = sum / (double)n;
+    vm_deallocate(mach_task_self(), (vm_address_t)cpu_info,
+                  count * (mach_msg_type_number_t)sizeof(integer_t));
+}
+
+static void mac_mem_swap(SysData *s)
+{
+    long long total = 0;
+    size_t len = sizeof total;
+    if (sysctlbyname("hw.memsize", &total, &len, NULL, 0) != 0 || total <= 0)
+        return;
+
+    mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
+    vm_statistics64_data_t vm;
+    memset(&vm, 0, sizeof vm);
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
+                          (host_info64_t)&vm, &cnt) != KERN_SUCCESS)
+        return;
+
+    /* Mirror the Python reference (psutil on macOS): used = active + wired,
+     * free = free_count, cache absorbs the remainder so that
+     * Used + Cache + Free == Total exactly. */
+    const long long page = (long long)getpagesize();
+    long long free_ = (long long)vm.free_count * page;
+    long long used = (long long)vm.active_count * page +
+                     (long long)vm.wire_count * page;
+    long long inactive = (long long)vm.inactive_count * page;
+    long long speculative = (long long)vm.speculative_count * page;
+
+    if (used < 0)
+        used = 0;
+    if (used > total)
+        used = total;
+    if (free_ < 0)
+        free_ = 0;
+    if (free_ > total - used)
+        free_ = total - used;
+    long long cache = total - used - free_;
+    if (cache < 0)
+        cache = 0;
+    long long avail = inactive + free_ + speculative;
+    if (avail < 0)
+        avail = 0;
+    if (avail > total)
+        avail = total;
+
+    const double bytes_per_gib = 1024.0 * 1024.0 * 1024.0;
+    s->total_mem_gb = (double)total / bytes_per_gib;
+    s->used_mem_gb = (double)used / bytes_per_gib;
+    s->cache_mem_gb = (double)cache / bytes_per_gib;
+    s->free_mem_gb = (double)free_ / bytes_per_gib;
+    s->avail_mem_gb = (double)avail / bytes_per_gib;
+    s->mem_percent = total > 0 ? (double)used / (double)total * 100.0 : 0.0;
+
+    struct xsw_usage xs;
+    size_t xslen = sizeof xs;
+    memset(&xs, 0, xslen);
+    if (sysctlbyname("vm.swapusage", &xs, &xslen, NULL, 0) == 0 &&
+        xs.xsu_total > 0) {
+        s->swap_total_mb = (double)xs.xsu_total / 1048576.0;
+        s->swap_used_mb = (double)xs.xsu_used / 1048576.0;
+        s->swap_percent = (double)xs.xsu_used / (double)xs.xsu_total * 100.0;
+    }
+}
+
+static int mac_apple_gpu(void)
+{
+    static int checked = 0;
+    static int detected = 0;
+    if (!checked) {
+        checked = 1;
+        char model[128];
+        size_t len = sizeof model;
+        if (sysctlbyname("hw.gpu.model", model, &len, NULL, 0) == 0 &&
+            model[0]) {
+            detected = 1;
+        } else {
+            uint64_t arm = 0;
+            len = sizeof arm;
+            if (sysctlbyname("hw.optional.arm64", &arm, &len, NULL, 0) == 0 &&
+                arm) {
+                detected = 1;
+            }
+        }
+    }
+    return detected;
+}
+
+/* Minimal JSON value extractors for the flat, single-embedded JSON emitted
+ * by macmon/system_profiler. Never accepts a key prefix inside a string. */
+static const char *json_find(const char *text, const char *key)
+{
+    char pat[96];
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *p = strstr(text, pat);
+    if (p == NULL)
+        return NULL;
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p != ':')
+        return NULL;
+    p++;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    return p;
+}
+
+static double json_num(const char *text, const char *key, double dflt)
+{
+    const char *p = json_find(text, key);
+    if (p == NULL)
+        return dflt;
+    char *end;
+    double v = strtod(p, &end);
+    if (end == p)
+        return dflt;
+    return v;
+}
+
+static int json_int(const char *text, const char *key, int dflt)
+{
+    const char *p = json_find(text, key);
+    if (p == NULL)
+        return dflt;
+    if (*p == '"')
+        p++;
+    char *end;
+    long v = strtol(p, &end, 10);
+    if (end == p)
+        return dflt;
+    return (int)v;
+}
+
+static int json_str(const char *text, const char *key, char *dst, size_t cap)
+{
+    const char *p = json_find(text, key);
+    if (p == NULL)
+        return 0;
+    if (*p == '"') {
+        p++;
+        size_t i = 0;
+        while (*p != '\0' && *p != '"' && i + 1 < cap) {
+            if (*p == '\\' && p[1] != '\0')
+                p++; /* skip the escape for one char */
+            dst[i++] = *p++;
+        }
+        dst[i] = '\0';
+        return i > 0;
+    }
+    snprintf(dst, cap, "%s", p);
+    return 1;
+}
+
+static int json_array2(const char *text, const char *key, double *a, double *b)
+{
+    const char *p = json_find(text, key);
+    if (p == NULL || *p != '[')
+        return 0;
+    p++;
+    char *end;
+    double va = strtod(p, &end);
+    if (end == p)
+        return 0;
+    p = end;
+    while (*p == ' ' || *p == '\t' || *p == ',')
+        p++;
+    double vb = strtod(p, &end);
+    if (end == p)
+        return 0;
+    *a = va;
+    *b = vb;
+    return 1;
+}
+
+static void mac_gpu_metadata(char *name, size_t cap, int *cores)
+{
+    static int done = 0;
+    static char sname[80] = "Apple GPU";
+    static int scores = 0;
+    if (!done) {
+        done = 1;
+        char buf[256];
+        size_t len = sizeof buf;
+        /* Fast sysctl path (present on newer macOS); the model name that
+         * hw.gpu.model would report is the marketing chip name. */
+        if (sysctlbyname("hw.gpu.model", buf, &len, NULL, 0) == 0 &&
+            buf[0]) {
+            snprintf(sname, sizeof sname, "%s", buf);
+        } else {
+            /* One-shot system_profiler JSON: SPDisplaysDataType[0] holds
+             * spdisplays_chipset (name) and sppci_cores (core count). */
+            char out[32768];
+            char *argv[] = { "/usr/sbin/system_profiler",
+                             "SPDisplaysDataType", "-json", NULL };
+            if (run_cmd_capture(argv, out, sizeof out, 8000) > 0) {
+                char chip[80];
+                if (json_str(out, "spdisplays_chipset", chip, sizeof chip) &&
+                    chip[0]) {
+                    snprintf(sname, sizeof sname, "%s", chip);
+                }
+                scores = json_int(out, "sppci_cores", 0);
+            }
+        }
+    }
+    snprintf(name, cap, "%s", sname);
+    *cores = scores;
+}
+
+static int mac_gpu_macmon(double *util, double *power, double *temp)
+{
+    char out[65536];
+    char *argv[] = { "macmon", "pipe", "-s", "1", NULL };
+    if (run_cmd_capture(argv, out, sizeof out, 5000) <= 0)
+        return -1;
+    double freq, usage; /* usage is 0.0..1.0 (fraction of max) */
+    *util = 0.0;
+    *power = json_num(out, "gpu_power", 0.0);
+    *temp = json_num(out, "gpu_temp_avg", 0.0);
+    if (json_array2(out, "gpu_usage", &freq, &usage))
+        *util = usage * 100.0;
+    return 0;
+}
+
+static int mac_gpu_powermetrics(double *util, double *power)
+{
+    char out[32768];
+    char *argv[] = { "/usr/bin/powermetrics", "--samplers", "gpu_power",
+                     "-n", "1", "-i", "1000", NULL };
+    if (run_cmd_capture(argv, out, sizeof out, 5000) <= 0)
+        return -1;
+    *util = 0.0;
+    *power = 0.0;
+    char *save = NULL;
+    for (char *line = strtok_r(out, "\n", &save); line != NULL;
+         line = strtok_r(NULL, "\n", &save)) {
+        const char *colon;
+        if ((colon = strstr(line, "GPU active percentage")) != NULL ||
+            (colon = strstr(line, "GPU active residency")) != NULL) {
+            colon = strchr(colon, ':');
+            if (colon != NULL)
+                *util = strtod(colon + 1, NULL);
+        } else if ((colon = strstr(line, "GPU power")) != NULL) {
+            colon = strchr(colon, ':');
+            if (colon != NULL) {
+                *power = strtod(colon + 1, NULL);
+                if (strstr(colon, "mW")) /* powermetrics reports mW */
+                    *power /= 1000.0;
+            }
+        }
+    }
+    return 0;
+}
+
+static void mac_gpu_util_power(double *util, double *power, double *temp)
+{
+    if (mac_gpu_macmon(util, power, temp) == 0)
+        return;
+    if (mac_gpu_powermetrics(util, power) == 0)
+        return;
+    *util = 0.0;
+    *power = 0.0;
+    *temp = 0.0;
+}
+
+/* Per-process CPU% across samples. pti_total_user/system are mach absolute
+ * ticks; convert to seconds with mach_timebase_info like the rest of Darwin. */
+typedef struct {
+    int pid;
+    unsigned long long cpu;
+    double wall;
+    int used;
+} MacProcPrev;
+
+static MacProcPrev g_mac_proc_prev[64];
+
+static void mac_proc_prev_compact(int *alive, int n_alive)
+{
+    for (size_t i = 0; i < sizeof g_mac_proc_prev / sizeof g_mac_proc_prev[0];
+         i++) {
+        if (!g_mac_proc_prev[i].used)
+            continue;
+        int found = 0;
+        for (int j = 0; j < n_alive; j++) {
+            if (alive[j] == g_mac_proc_prev[i].pid) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found)
+            g_mac_proc_prev[i].used = 0;
+    }
+}
+
+static double mac_proc_cpu_percent(int pid, double now)
+{
+    struct proc_taskinfo pti;
+    if (proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &pti, (int)sizeof pti) !=
+        (int)sizeof pti)
+        return 0.0;
+    unsigned long long cpu = pti.pti_total_user + pti.pti_total_system;
+
+    MacProcPrev *slot = NULL;
+    for (size_t i = 0; i < sizeof g_mac_proc_prev / sizeof g_mac_proc_prev[0];
+         i++) {
+        if (g_mac_proc_prev[i].used && g_mac_proc_prev[i].pid == pid) {
+            slot = &g_mac_proc_prev[i];
+            break;
+        }
+        if (!g_mac_proc_prev[i].used && slot == NULL)
+            slot = &g_mac_proc_prev[i];
+    }
+    if (slot == NULL)
+        slot = &g_mac_proc_prev[0];
+    static mach_timebase_info_data_t s_tb;
+    if (s_tb.denom == 0)
+        mach_timebase_info(&s_tb);
+
+    double pct = 0.0;
+    if (slot->used) {
+        double dt = now - slot->wall;
+        unsigned long long dc = cpu >= slot->cpu ? cpu - slot->cpu : 0;
+        if (dt > 0.0) {
+            double secs = (double)dc * (double)s_tb.numer /
+                          (double)s_tb.denom / 1e9;
+            pct = secs / dt * 100.0;
+        }
+    }
+    slot->used = 1;
+    slot->pid = pid;
+    slot->cpu = cpu;
+    slot->wall = now;
+    return pct;
+}
+
+static void mac_proc_args(int pid, char *out, size_t cap)
+{
+    out[0] = '\0';
+    int argmax = 0;
+    size_t sz = sizeof argmax;
+    int mib[3] = { CTL_KERN, KERN_ARGMAX };
+    if (sysctl(mib, 2, &argmax, &sz, NULL, 0) != 0 || argmax <= 0)
+        return;
+    char *procargs = malloc((size_t)argmax);
+    if (procargs == NULL)
+        return;
+    mib[0] = CTL_KERN;
+    mib[1] = KERN_PROCARGS2;
+    mib[2] = pid;
+    size_t size = (size_t)argmax;
+    if (sysctl(mib, 3, procargs, &size, NULL, 0) == 0 && size > 0) {
+        char *end = procargs + size;
+        char *sp = procargs;
+        while (sp < end && *sp != '\0')
+            sp++;
+        while (sp < end && *sp == '\0')
+            sp++;
+        if ((size_t)(end - sp) > sizeof(int)) {
+            int nargs;
+            memcpy(&nargs, sp, sizeof nargs);
+            sp += sizeof(int);
+            size_t pos = 0;
+            int first = 1;
+            while (nargs-- > 0 && sp < end && pos + 1 < cap) {
+                if (*sp != '\0') {
+                    int w = snprintf(out + pos, cap - pos, "%s%s",
+                                     first ? "" : " ", sp);
+                    if (w < 0 || (size_t)w >= cap - pos)
+                        break;
+                    pos += (size_t)w;
+                    first = 0;
+                }
+                while (sp < end && *sp != '\0')
+                    sp++;
+                if (sp < end)
+                    sp++;
+            }
+        }
+    }
+    free(procargs);
+}
+
+static void mac_proc_extra(GpuProc *gp)
+{
+    struct proc_taskallinfo t;
+    if (proc_pidinfo(gp->pid, PROC_PIDTASKALLINFO, 0, &t, (int)sizeof t) ==
+        (int)sizeof t) {
+        struct passwd *pw = getpwuid(t.pbsd.pbi_uid);
+        if (pw != NULL && pw->pw_name != NULL)
+            snprintf(gp->user, sizeof gp->user, "%s", pw->pw_name);
+        if (t.pbsd.pbi_comm[0] != '\0')
+            snprintf(gp->process_name, sizeof gp->process_name, "%s",
+                     t.pbsd.pbi_comm);
+    } else {
+        char nm[128];
+        if (proc_name(gp->pid, nm, sizeof nm) > 0 && nm[0])
+            snprintf(gp->process_name, sizeof gp->process_name, "%s", nm);
+    }
+    char argv[512];
+    mac_proc_args(gp->pid, argv, sizeof argv);
+    if (argv[0] != '\0')
+        snprintf(gp->cmdline, sizeof gp->cmdline, "%s", argv);
+    else if (gp->process_name[0] != '\0')
+        snprintf(gp->cmdline, sizeof gp->cmdline, "%s", gp->process_name);
+}
+
+static void mac_gpu_procs(GpuProc *procs, int *n_procs)
+{
+    *n_procs = 0;
+    int all = proc_listallpids(NULL, 0);
+    if (all <= 0)
+        return;
+    int cap = all < 512 ? all : 512;
+    pid_t pids[512];
+    int n = proc_listallpids(pids, (int)(cap * sizeof(pid_t)));
+    if (n <= 0)
+        return;
+    if (n > cap)
+        n = cap;
+
+    typedef struct {
+        int pid;
+        double rss;
+    } Cand;
+    Cand cand[512];
+    int nc = 0;
+    double now = now_mono();
+    for (int i = 0; i < n; i++) {
+        struct proc_taskinfo pti;
+        if (proc_pidinfo(pids[i], PROC_PIDTASKINFO, 0, &pti,
+                         (int)sizeof pti) != (int)sizeof pti)
+            continue;
+        cand[nc].pid = (int)pids[i];
+        cand[nc].rss = (double)pti.pti_resident_size / 1048576.0;
+        nc++;
+    }
+
+    /* Top-N by host memory as a proxy for GPU activity (UMA: no separate
+     * per-process VRAM query without privileges). Mirrors the Python
+     * reference's macOS process pass. */
+    for (int i = 1; i < nc; i++) {
+        Cand key = cand[i];
+        int j = i - 1;
+        while (j >= 0 && cand[j].rss < key.rss) {
+            cand[j + 1] = cand[j];
+            j--;
+        }
+        cand[j + 1] = key;
+    }
+
+    int keep = nc < MAX_GPU_PROCS ? nc : MAX_GPU_PROCS;
+    int alive[MAX_GPU_PROCS];
+    for (int i = 0; i < keep; i++) {
+        GpuProc *gp = &procs[i];
+        memset(gp, 0, sizeof *gp);
+        gp->pid = cand[i].pid;
+        gp->host_mem_mb = cand[i].rss;
+        gp->cpu_pct = mac_proc_cpu_percent(gp->pid, now);
+        mac_proc_extra(gp);
+        alive[i] = gp->pid;
+    }
+    *n_procs = keep;
+    mac_proc_prev_compact(alive, keep);
+}
+
+static void mac_collect_gpus(Gpu *gpus, int *n_gpus, GpuProc *procs,
+                             int *n_procs)
+{
+    *n_gpus = 0;
+    *n_procs = 0;
+    if (!mac_apple_gpu())
+        return;
+
+    Gpu g;
+    memset(&g, 0, sizeof g);
+    snprintf(g.idx, sizeof g.idx, "0");
+    int cores = 0;
+    mac_gpu_metadata(g.name, sizeof g.name, &cores);
+    g.is_uma = 1;
+    g.gpu_cores = cores;
+    mac_gpu_util_power(&g.gpu_util, &g.power, &g.temp);
+    gpus[0] = g;
+    *n_gpus = 1;
+
+    mac_gpu_procs(procs, n_procs);
+}
+
+#endif /* __APPLE__ */
+
+#if !defined(__APPLE__)
 
 /* ---------------- nvidia-smi ---------------- */
 
@@ -598,8 +1174,13 @@ static void enrich_proc(GpuProc *gp)
     }
 }
 
+#endif /* !__APPLE__ */
+
 void collect_gpus(Gpu *gpus, int *n_gpus, GpuProc *procs, int *n_procs)
 {
+#if defined(__APPLE__)
+    mac_collect_gpus(gpus, n_gpus, procs, n_procs);
+#else
     *n_gpus = 0;
     *n_procs = 0;
     if (!nvidia_available())
@@ -665,6 +1246,7 @@ void collect_gpus(Gpu *gpus, int *n_gpus, GpuProc *procs, int *n_procs)
     for (int i = 0; i < keep; i++)
         procs[i] = tmp[i];
     *n_procs = keep;
+#endif /* __APPLE__ */
 }
 
 /* ---------------- background update thread ---------------- */
@@ -767,7 +1349,20 @@ void stats_stop(Stats *st)
 
 int gpu_backend_nvidia(void)
 {
+#if defined(__APPLE__)
+    return 0;
+#else
     return nvidia_available();
+#endif
+}
+
+int gpu_backend_apple(void)
+{
+#if defined(__APPLE__)
+    return mac_apple_gpu();
+#else
+    return 0;
+#endif
 }
 
 /* ---------------- deterministic fixture (golden tests) ----------------

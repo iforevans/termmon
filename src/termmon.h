@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include <time.h>
 
-#define TERMMON_VERSION "1.22.0"
+#define TERMMON_VERSION "1.23.0"
 
 #define BAR_WIDTH 20
 #define MIN_BAR_WIDTH 5
@@ -57,6 +57,8 @@ typedef struct {
     double gpu_util;
     double temp;
     double power;
+    int is_uma;    /* Apple Silicon Unified Memory — no separate VRAM */
+    int gpu_cores; /* Apple Silicon GPU core count (0 when unknown) */
 } Gpu;
 
 typedef struct {
@@ -103,6 +105,7 @@ void collect_sys(SysData *s);
 void collect_gpus(Gpu *gpus, int *n_gpus, GpuProc *procs, int *n_procs);
 
 int gpu_backend_nvidia(void);
+int gpu_backend_apple(void);
 
 /* pure layout helpers (layout.c) */
 int u8_len(const char *s);

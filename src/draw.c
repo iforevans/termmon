@@ -554,15 +554,23 @@ static int draw_cpu_section(App *app, WINDOW *scr, int y, int x, int height,
 
 static const char *gpu_section_title(const Snapshot *snap)
 {
-    if (snap->n_gpus == 0)
-        return gpu_backend_nvidia() ? "NVIDIA GPU(s)" : "GPU";
+    if (snap->n_gpus == 0) {
+        if (gpu_backend_nvidia())
+            return "NVIDIA GPU(s)";
+        if (gpu_backend_apple())
+            return "Apple GPU";
+        return "GPU";
+    }
     return "GPUs";
 }
 
 static const char *gpu_no_data_message(void)
 {
-    return gpu_backend_nvidia() ? "No NVIDIA GPUs found or nvidia-smi not available"
-                                : "No GPU detected or GPU monitoring unavailable";
+    if (gpu_backend_nvidia())
+        return "No NVIDIA GPUs found or nvidia-smi not available";
+    if (gpu_backend_apple())
+        return "No GPU data available (powermetrics may need entitlements)";
+    return "No GPU detected or GPU monitoring unavailable";
 }
 
 static int draw_gpu_section(App *app, WINDOW *scr, int y, int x, int height,
@@ -597,7 +605,16 @@ static int draw_gpu_section(App *app, WINDOW *scr, int y, int x, int height,
             /* Row 1: name | Util | Temp | Power, dropping segments to fit */
             char segs[4][160];
             int nsegs = 0;
-            snprintf(segs[nsegs++], 160, "GPU %s: %s", gpu->idx, gpu->name);
+            if (gpu->is_uma) {
+                if (gpu->gpu_cores > 0)
+                    snprintf(segs[nsegs++], 160, "%s (%d-core GPU)",
+                             gpu->name, gpu->gpu_cores);
+                else
+                    snprintf(segs[nsegs++], 160, "%s", gpu->name);
+            } else {
+                snprintf(segs[nsegs++], 160, "GPU %s: %s", gpu->idx,
+                         gpu->name);
+            }
             snprintf(segs[nsegs++], 160, "Util: %.1f%%", gpu->gpu_util);
             if (gpu->temp > 0)
                 snprintf(segs[nsegs++], 160, "Temp: %.0f°C", gpu->temp);
@@ -630,56 +647,95 @@ static int draw_gpu_section(App *app, WINDOW *scr, int y, int x, int height,
             if (y >= height - 3)
                 break;
 
-            /* Row 2: Util bar (left) | VRAM (right, when wide) */
+            /* Row 2: Util bar (left) | VRAM or UMA info (right, when wide) */
             char util_info[32];
             snprintf(util_info, sizeof util_info, " %6.1f%%", gpu->gpu_util);
-            double mem_pct = gpu->mem_total > 0
-                                 ? gpu->mem_used / gpu->mem_total * 100.0
-                                 : 0.0;
-            double mem_used_gb = gpu->mem_used / 1024.0;
-            double mem_total_gb = gpu->mem_total / 1024.0;
-            char vram_info[64];
-            snprintf(vram_info, sizeof vram_info, " %5.1fGB/%4.1fG %5.1f%%",
-                     mem_used_gb, mem_total_gb, mem_pct);
 
-            int two_col = bw >= GPU_TWO_COL_MIN;
-            int bar_w;
-            if (two_col) {
-                int overhead = 7 + (int)strlen(util_info) + 2 + 5 +
-                               (int)strlen(vram_info) + 1;
-                bar_w = bar_width(bw, 1, overhead);
-            } else {
-                int overhead = 7 + (int)strlen(util_info) + 1;
-                bar_w = bar_width(bw, 0, overhead);
-            }
+            if (gpu->is_uma) {
+                const char *uma_text = "UMA: shared w/ system memory";
+                int uma_overhead = 7 + (int)strlen(util_info) + 2 +
+                                   (int)strlen(uma_text) + 1;
+                int uma_two_col = (bw - 2 - uma_overhead) >= MIN_BAR_WIDTH;
+                int uma_bar_w = bar_width(
+                    bw, 0,
+                    uma_two_col ? uma_overhead
+                                : 7 + (int)strlen(util_info) + 1);
 
-            blank_row(scr, y, x, bw, right_edge);
-            safe_addstr(scr, y, x, "│ Util:", 0, right_edge);
-            draw_bar(scr, y, x + 7, gpu->gpu_util, bar_w, COLOR_CPU, border_x);
-            safe_addstr(scr, y, x + 7 + bar_w, util_info, 0, border_x);
-
-            if (two_col) {
-                int rcs = x + 7 + bar_w + (int)strlen(util_info) + 2;
-                safe_addstr(scr, y, rcs, "VRAM:", 0, border_x);
-                draw_bar(scr, y, rcs + 5, mem_pct, bar_w, COLOR_VRAM,
+                blank_row(scr, y, x, bw, right_edge);
+                safe_addstr(scr, y, x, "│ Util:", 0, right_edge);
+                draw_bar(scr, y, x + 7, gpu->gpu_util, uma_bar_w, COLOR_CPU,
                          border_x);
-                safe_addstr(scr, y, rcs + 5 + bar_w, vram_info, 0, border_x);
-                safe_addstr(scr, y, border_x, "│", 0, right_edge);
-                y += 1;
+                safe_addstr(scr, y, x + 7 + uma_bar_w, util_info, 0,
+                            border_x);
+                if (uma_two_col) {
+                    safe_addstr(scr, y, x + 7 + uma_bar_w +
+                                        (int)strlen(util_info) + 2,
+                                uma_text, 0, border_x);
+                    safe_addstr(scr, y, border_x, "│", 0, right_edge);
+                    y += 1;
+                } else {
+                    safe_addstr(scr, y, border_x, "│", 0, right_edge);
+                    y += 1;
+                    if (y < height - 3) {
+                        char uma_clip[160];
+                        u8_clip(uma_clip, sizeof uma_clip, uma_text, bw - 4);
+                        blank_row(scr, y, x, bw, right_edge);
+                        snprintf(line, sizeof line, "│ %s", uma_clip);
+                        safe_addstr(scr, y, x, line, 0, border_x);
+                        y += 1;
+                    }
+                }
             } else {
-                safe_addstr(scr, y, border_x, "│", 0, right_edge);
-                y += 1;
-                if (y < height - 3) {
-                    int vram_overhead = 7 + (int)strlen(vram_info) + 1;
-                    int vram_bar_w = bar_width(bw, 0, vram_overhead);
-                    blank_row(scr, y, x, bw, right_edge);
-                    safe_addstr(scr, y, x, "│ VRAM:", 0, right_edge);
-                    draw_bar(scr, y, x + 7, mem_pct, vram_bar_w, COLOR_VRAM,
+                double mem_pct = gpu->mem_total > 0
+                                     ? gpu->mem_used / gpu->mem_total * 100.0
+                                     : 0.0;
+                double mem_used_gb = gpu->mem_used / 1024.0;
+                double mem_total_gb = gpu->mem_total / 1024.0;
+                char vram_info[64];
+                snprintf(vram_info, sizeof vram_info, " %5.1fGB/%4.1fG %5.1f%%",
+                         mem_used_gb, mem_total_gb, mem_pct);
+
+                int two_col = bw >= GPU_TWO_COL_MIN;
+                int bar_w;
+                if (two_col) {
+                    int overhead = 7 + (int)strlen(util_info) + 2 + 5 +
+                                   (int)strlen(vram_info) + 1;
+                    bar_w = bar_width(bw, 1, overhead);
+                } else {
+                    int overhead = 7 + (int)strlen(util_info) + 1;
+                    bar_w = bar_width(bw, 0, overhead);
+                }
+
+                blank_row(scr, y, x, bw, right_edge);
+                safe_addstr(scr, y, x, "│ Util:", 0, right_edge);
+                draw_bar(scr, y, x + 7, gpu->gpu_util, bar_w, COLOR_CPU,
+                         border_x);
+                safe_addstr(scr, y, x + 7 + bar_w, util_info, 0, border_x);
+
+                if (two_col) {
+                    int rcs = x + 7 + bar_w + (int)strlen(util_info) + 2;
+                    safe_addstr(scr, y, rcs, "VRAM:", 0, border_x);
+                    draw_bar(scr, y, rcs + 5, mem_pct, bar_w, COLOR_VRAM,
                              border_x);
-                    safe_addstr(scr, y, x + 7 + vram_bar_w, vram_info, 0,
+                    safe_addstr(scr, y, rcs + 5 + bar_w, vram_info, 0,
                                 border_x);
                     safe_addstr(scr, y, border_x, "│", 0, right_edge);
                     y += 1;
+                } else {
+                    safe_addstr(scr, y, border_x, "│", 0, right_edge);
+                    y += 1;
+                    if (y < height - 3) {
+                        int vram_overhead = 7 + (int)strlen(vram_info) + 1;
+                        int vram_bar_w = bar_width(bw, 0, vram_overhead);
+                        blank_row(scr, y, x, bw, right_edge);
+                        safe_addstr(scr, y, x, "│ VRAM:", 0, right_edge);
+                        draw_bar(scr, y, x + 7, mem_pct, vram_bar_w,
+                                 COLOR_VRAM, border_x);
+                        safe_addstr(scr, y, x + 7 + vram_bar_w, vram_info, 0,
+                                    border_x);
+                        safe_addstr(scr, y, border_x, "│", 0, right_edge);
+                        y += 1;
+                    }
                 }
             }
 

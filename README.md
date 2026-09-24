@@ -16,14 +16,15 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
 - **Color-coded progress bars**: Visual feedback for resource usage
 - **Fully responsive layout**: Reflows to any terminal size (nvtop-style) — resize freely, content never wraps or overwrites itself. Degrades gracefully from ultra-wide down to ~28 columns
 - **Auto-refresh**: Updates every second by default — configurable at launch (`-i`/`--interval SECONDS`, 0.5–60) or interactively with `r`
-- **Native C port (Linux)**: small ELF binary against `ncursesw` — no Python runtime needed, verified to render **byte-identical** to the Python reference
-- **Python reference**: `termmon.py` stays in-tree as the golden reference renderer and the macOS (Apple Silicon) path
+- **Native C port (Linux + macOS)**: small ELF/Mach-O binary against `ncurses` — no Python runtime needed. On Linux, verified to render **byte-identical** to the Python reference
+- **Python reference**: `termmon.py` stays in-tree as the golden reference renderer
 
 ## Requirements
 
-### C port (Linux, default)
-- `gcc` (or any C11 compiler) with `ncursesw` (`pkg-config` locates `ncursesw`, falling back to `ncurses`)
-- NVIDIA drivers with `nvidia-smi` (for GPU monitoring)
+### C port (Linux + macOS, default)
+- `gcc` (or any C11 compiler) with ncurses (`pkg-config` locates `ncursesw`, falling back to `ncurses`)
+- Linux: NVIDIA drivers with `nvidia-smi` (for GPU monitoring)
+- macOS: `macmon` (recommended) or `powermetrics` for GPU utilization/power
 
 ### Python reference (Linux + macOS)
 - Python 3.9+
@@ -42,7 +43,7 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
 ```bash
 cd ~/dev/termmon
 
-# Build the native C port (Linux)
+# Build the native C port (Linux + macOS)
 make            # -> ./termmon
 
 # Install to ~/bin (backs up any previous ~/bin/termmon as termmon.py.bak)
@@ -51,7 +52,7 @@ termmon
 ```
 
 ```bash
-# Or run the Python reference directly (also the macOS path)
+# Or run the Python reference directly
 python3 termmon.py
 ```
 
@@ -80,7 +81,7 @@ The layout is **fully responsive** — it reflows to whatever size your terminal
 At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, cores run in two columns, and GPU Util/VRAM share a row:
 
 ```
- termmon 1.22.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
+ termmon 1.23.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                              │
  │────────────────────────────────────────────────────────────────────────────│
@@ -115,7 +116,7 @@ At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, 
 Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GPU title drops segments, and Util/VRAM take their own rows — no wrapping, no overwritten content:
 
 ```
- termmon 1.22.0 | 14:32:07
+ termmon 1.23.0 | 14:32:07
  ┌──────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                │
  │──────────────────────────────────────────────│
@@ -179,12 +180,12 @@ Below ~24 columns termmon shows a "Terminal too small" notice rather than render
 - **Built with**: C + ncursesw (native Linux port, `src/`); the Python reference uses curses + psutil (`termmon.py`)
 - **Dependencies**: C build: a C11 compiler + ncursesw (auto-detected via `pkg-config`); Python reference: `psutil`
 - **Golden reference testing**: the C renderer is verified byte-identical to the Python renderer on frozen data (`tests/test_golden.py`)
-- **Platform detection**: Auto-detects Linux (NVIDIA) or macOS (Apple Silicon) — macOS runs the Python reference; the C port is Linux-only
-- **GPU Detection**: `nvidia-smi` on Linux; `macmon` (preferred), `socpwrbud`, or `powermetrics` + `system_profiler` on macOS
-- **macOS GPU**: Three-tier fallback — `macmon` (actively maintained, no sudo), `socpwrbud` (archived, no sudo), `powermetrics` (requires sudo on macOS 13+)
-- **CPU Stats**: C reads per-core deltas from `/proc/stat`; Python uses psutil (cross-platform)
-- **Memory Stats**: Linux reads `/proc/meminfo` directly — `Cache = Buffers + Cached + SReclaimable`, `Used = Total − Free − Cache` (so Used + Cache + Free == Total); `MemAvailable` is shown beside the bar, never as a segment. Other platforms use psutil (its Linux `.cached` already folds in SReclaimable, so mixing both would double-count)
-- **Process Info**: C parses `/proc/[pid]/{stat,status,cmdline}` with jiffies-delta CPU%; Python uses psutil.Process()
+- **Platform detection**: Auto-detects Linux (NVIDIA) or macOS (Apple Silicon) — the C port runs natively on both; the Python reference stays as the golden oracle
+- **GPU Detection**: `nvidia-smi` on Linux; `macmon` (preferred) or `powermetrics` on macOS, GPU model/core count via `hw.gpu.model` or `system_profiler`
+- **macOS GPU**: Two-tier fallback — `macmon` (actively maintained, no sudo), `powermetrics` (requires sudo on macOS 13+); UMA-aware rendering (core count + "shared w/ system memory" instead of a VRAM bar)
+- **CPU Stats**: Linux reads per-core deltas from `/proc/stat`; macOS uses `host_processor_info` tick deltas; Python uses psutil (cross-platform)
+- **Memory Stats**: Linux reads `/proc/meminfo` directly — `Cache = Buffers + Cached + SReclaimable`, `Used = Total − Free − Cache` (so Used + Cache + Free == Total); `MemAvailable` is shown beside the bar, never as a segment. macOS reads `hw.memsize` + `host_statistics64` — `Used = active + wired`, `Free = free_count`, cache absorbs the remainder (mirrors psutil's macOS accounting, verified against it). Other platforms use psutil (its Linux `.cached` already folds in SReclaimable, so mixing both would double-count)
+- **Process Info**: Linux parses `/proc/[pid]/{stat,status,cmdline}` with jiffies-delta CPU%; macOS uses `libproc`/`proc_pidinfo` with mach-tick delta CPU% (top-N by host RSS as the UMA proxy for GPU activity); Python uses psutil.Process()
 - **Refresh Rate**: 1 second by default — launch with `-i`/`--interval SECONDS` (0.5–60), or cycle presets (0.5/1/2/5/10/30/60s) live with the `r` key
 - **Layout**: Adaptive box width (`min(120, terminal_width - 2)`), computed bar widths, and per-section two-column/single-column breakpoints. All drawing goes through a single bounds-clipping `_safe_addstr()` helper
 - **Resize handling**: `SIGWINCH` triggers a kernel `TIOCGWINSZ` query (not the stale curses `getmaxyx()` cache), then `resizeterm()` + `clear()`
@@ -224,6 +225,9 @@ python3 tests/test_pty_layout.py --show 80
 The C golden harness feeds both renderers the same fixture (`TERMMON_FIXTURE=…`) and diffs the pyte-parsed screen row-for-row — the strongest guarantee the port is behaviourally identical. The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.23.0 (2026-09-24)
+- **Native macOS (Apple Silicon) support in the C port**: `collect.c` now compiles and runs on Darwin — the binary is no longer Linux-only. System stats: CPU% from `host_processor_info` per-core tick deltas; memory/swap from `hw.memsize` + `host_statistics64` + `vm.swapusage`, mirroring psutil's macOS accounting (`Used = active + wired`, `Free = free_count`, cache absorbs the remainder so Used + Cache + Free == Total; values converted bytes→GiB, verified against psutil live). Apple GPU: two-tier `macmon` → `powermetrics` for util/power/temp, GPU model via `hw.gpu.model` with one-shot `system_profiler` fallback for the chip name + core count (`spdisplays_chipset`/`sppci_cores`), one-shot JSON extractors (no parser dependency). GPU processes: top-N by host RSS (UMA proxy, no privileged per-process VRAM query), user/name via `proc_pidinfo(PROC_PIDTASKALLINFO)`, args via `KERN_PROCARGS2`, CPU% via mach-tick deltas seeded across samples. UMA-aware rendering: `Apple GPU (N-core GPU)` title, "UMA: shared w/ system memory" in place of the VRAM bar, `gpu_backend_apple()` drives the section title and no-data message. NVIDIA/`/proc` paths untouched behind `#if !defined(__APPLE__)`; golden tests still exercise the Linux path. Verified live on M-series: memory matches psutil, macmon reads flow in, `mlx-serve` listed with user/host-mem/CPU%.
 
 ### v1.22.0 (2026-09-19)
 - **Interactive cadence control**: the `r` key now cycles the refresh interval through presets 0.5→1→2→5→10→30→60→0.5s instead of forcing a single refresh; the footer shows the active cadence immediately (it already rendered the live interval). The pure ladder (`next_refresh_interval`) is unit-tested; golden tests press `r` in real PTYs and assert C and Python footers step identically (1 press → 2s, 2 → 5s, full loop back). Title/footer hints renamed `r:refresh` → `r:rate`; help popup line is now `r - Cycle refresh rate`. Forcing an immediate collection still happens on every `r` press (and at each new cadence); CLI `-i` remains for a fixed non-default start.
