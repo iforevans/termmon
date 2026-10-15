@@ -226,6 +226,9 @@ The C golden harness feeds both renderers the same fixture (`TERMMON_FIXTURE=…
 
 ## Development Timeline
 
+### v1.25.0 (2026-10-15)
+- **Short terminals: no wasted rows, three-column CPU**: the v1.24.x fixes kept the process table alive on a Termius/iPad screen but paid for it with core rows clipped (6 of 16 visible at 110×38) while blank separator rows between the boxes went unused. Two changes, identical in both implementations: (1) the one blank row between sections is dropped when the terminal is too short to show everything comfortably, and the three reclaimed rows go back into the CPU/GPU budgets — at 110×38 every core is visible again; (2) when the two-column core rows still don't fit the height left for the CPU box, cores pack into three narrower columns (gauges shorten to match), so 16 cores need 6 rows instead of 8. The compact/3-column modes trigger only under height pressure — roomy terminals render exactly as before. Golden C-vs-Python byte-identical at all nine test sizes; verified in real PTYs at 26/30/34/38 rows.
+
 ### v1.24.2 (2026-10-15)
 - **Process table no longer starved on short terminals**: with the footer visible but the GPU-process rows gone (Termius on iPad at ~38 rows), the cause was vertical-space starvation, not size detection — the CPU core rows and GPU bars draw first and consumed every line, and the process section's `height - 3` guards then silently dropped its rows down to just the header. The frame now budgets bottom-up: the process table reserves its minimum viable height (chrome + up to 3 rows + footers) and the GPU section reserves enough to show every GPU in full; the CPU core rows — the most expendable content — absorb the squeeze first. GPU and process sections may now draw down to `height - 2` (the app footer needs only the last row, not three). Verified in real PTYs at 26/30/34/38 rows: process rows render at every height; golden C-vs-Python still byte-identical.
 

@@ -251,7 +251,7 @@ typedef struct {
 } MemRow;
 
 static int draw_memory_section(App *app, WINDOW *scr, int y, int x, int height,
-                               const Snapshot *snap, int bw)
+                               const Snapshot *snap, int bw, int gap)
 {
     int right_edge = x + bw;
     int border_x = x + bw - 1;
@@ -391,7 +391,7 @@ static int draw_memory_section(App *app, WINDOW *scr, int y, int x, int height,
     }
 
     box_footer(scr, y, x, bw, right_edge);
-    y += 2;
+    y += gap;
     (void)app;
     return y;
 }
@@ -447,7 +447,7 @@ static void core_cell(int core_id, double core_pct, int width,
 }
 
 static int draw_cpu_section(App *app, WINDOW *scr, int y, int x, int height,
-                            const Snapshot *snap, int bw)
+                            const Snapshot *snap, int bw, int gap)
 {
     int right_edge = x + bw;
     const SysData *s = &snap->sys;
@@ -487,65 +487,69 @@ static int draw_cpu_section(App *app, WINDOW *scr, int y, int x, int height,
     int pct_len = (int)strlen(" 100.0%");
 
     int min_cell = label_width + MIN_BAR_WIDTH + pct_len;
-    int two_col = content_width >= (min_cell * 2 + gap_width);
+    /* A cell needs label + a usable bar + percentage. Pack cores into as many
+     * columns as the width allows; when the two-column rows would not fit the
+     * height we were given, go to three (shorter) columns so more cores stay
+     * visible on short terminals. */
+    int n_cols = 1;
+    if (content_width >= min_cell * 2 + gap_width)
+        n_cols = 2;
+    if (n_cols == 2 &&
+        content_width >= min_cell * 3 + 2 * gap_width &&
+        (core_count + 1) / 2 > (height - 3) - y)
+        n_cols = 3;
 
-    int col_width, right_width, rows;
-    if (two_col) {
-        col_width = (content_width - gap_width) / 2;
-        right_width = content_width - gap_width - col_width;
-        rows = (core_count + 1) / 2;
-    } else {
-        col_width = content_width;
-        right_width = 0;
-        rows = core_count;
-    }
+    int rows = (core_count + n_cols - 1) / n_cols;
+    int col_w[3], col_x[3];
+    int rem = content_width - gap_width * (n_cols - 1);
+    for (int c = 0; c < n_cols; c++)
+        col_w[c] = rem / n_cols;
+    /* odd remainder widens the right-hand cells, matching the old 2-col rule */
+    for (int c = n_cols - 1, extra = rem - (rem / n_cols) * n_cols;
+         c >= 0 && extra > 0; c--, extra--)
+        col_w[c] += 1;
+    col_x[0] = 0;
+    for (int c = 1; c < n_cols; c++)
+        col_x[c] = col_x[c - 1] + col_w[c - 1] + gap_width;
 
     chtype cpu_attr = COLOR_PAIR(COLOR_CPU) | A_BOLD;
 
     for (int i = 0; i < rows; i++) {
         if (y >= height - 3)
             break;
-        char left[BUF] = "";
-        int left_bar_start = 0, left_filled = 0;
-        if (i < core_count)
-            core_cell(i, s->per_core[i], col_width, label_width, left,
-                      sizeof left, &left_bar_start, &left_filled);
-        if (!left[0])
-            u8_fit(left, sizeof left, "", col_width);
-
-        int right_bar_start = 0, right_filled = 0;
-        if (two_col) {
-            char right[BUF] = "";
-            int right_idx = i + rows;
-            if (right_idx < core_count)
-                core_cell(right_idx, s->per_core[right_idx], right_width,
-                          label_width, right, sizeof right, &right_bar_start,
-                          &right_filled);
-            if (!right[0])
-                u8_fit(right, sizeof right, "", right_width);
-            snprintf(line, sizeof line, "│ %s  %s │", left, right);
-        } else {
-            snprintf(line, sizeof line, "│ %s │", left);
+        char cell[BUF];
+        int bar_start[3] = { 0, 0, 0 };
+        int filled[3] = { 0, 0, 0 };
+        size_t pos = 0;
+        pos += (size_t)snprintf(line + pos, sizeof line - pos, "│ ");
+        for (int c = 0; c < n_cols; c++) {
+            int idx = i + c * rows;
+            cell[0] = '\0';
+            if (idx < core_count)
+                core_cell(idx, s->per_core[idx], col_w[c], label_width, cell,
+                          sizeof cell, &bar_start[c], &filled[c]);
+            if (!cell[0])
+                u8_fit(cell, sizeof cell, "", col_w[c]);
+            pos += (size_t)snprintf(line + pos, sizeof line - pos, "%s", cell);
+            if (c + 1 < n_cols)
+                pos += (size_t)snprintf(line + pos, sizeof line - pos, "  ");
         }
+        snprintf(line + pos, sizeof line - pos, " │");
         safe_addstr(scr, y, x, line, 0, right_edge);
 
-        if (left_filled > 0) {
-            char blocks[BUF];
-            filled_blocks(blocks, sizeof blocks, left_filled);
-            safe_addstr(scr, y, x + 2 + left_bar_start, blocks, cpu_attr,
-                        x + bw - 1);
-        }
-        if (two_col && right_filled > 0) {
-            char blocks[BUF];
-            int right_x = x + 2 + col_width + gap_width + right_bar_start;
-            filled_blocks(blocks, sizeof blocks, right_filled);
-            safe_addstr(scr, y, right_x, blocks, cpu_attr, x + bw - 1);
+        for (int c = 0; c < n_cols; c++) {
+            if (filled[c] > 0) {
+                char blocks[BUF];
+                filled_blocks(blocks, sizeof blocks, filled[c]);
+                safe_addstr(scr, y, x + 2 + col_x[c] + bar_start[c], blocks,
+                            cpu_attr, x + bw - 1);
+            }
         }
         y += 1;
     }
 
     box_footer(scr, y, x, bw, right_edge);
-    y += 2;
+    y += gap;
     (void)app;
     return y;
 }
@@ -574,7 +578,7 @@ static const char *gpu_no_data_message(void)
 }
 
 static int draw_gpu_section(App *app, WINDOW *scr, int y, int x, int height,
-                            const Snapshot *snap, int bw)
+                            const Snapshot *snap, int bw, int gap)
 {
     int right_edge = x + bw;
     int border_x = x + bw - 1;
@@ -747,7 +751,7 @@ static int draw_gpu_section(App *app, WINDOW *scr, int y, int x, int height,
     }
 
     box_footer(scr, y, x, bw, right_edge);
-    y += 2;
+    y += gap;
     (void)app;
     return y;
 }
@@ -778,7 +782,8 @@ static void draw_scrolled_process_line(WINDOW *scr, int y, int x, int scroll_x,
 }
 
 static int draw_gpu_processes_section(App *app, WINDOW *scr, int y, int x,
-                                      int height, const Snapshot *snap, int bw)
+                                      int height, const Snapshot *snap, int bw,
+                                      int gap)
 {
     int right_edge = x + bw;
     char line[BUF];
@@ -837,7 +842,7 @@ static int draw_gpu_processes_section(App *app, WINDOW *scr, int y, int x,
     }
 
     box_footer(scr, y, x, bw, right_edge);
-    y += 2;
+    y += gap;
     return y;
 }
 
@@ -912,10 +917,18 @@ void draw(App *app, WINDOW *scr)
      * content on the screen, so they absorb the squeeze first. */
     int gpu_need = snap.n_gpus > 0 ? 3 * snap.n_gpus + 3 : 6;
 
-    y = draw_memory_section(app, scr, y, x, height - 6 - gpu_need - proc_min, &snap, bw);
-    y = draw_cpu_section(app, scr, y, x, height - gpu_need - proc_min, &snap, bw);
-    y = draw_gpu_section(app, scr, y, x, height - proc_min, &snap, bw);
-    y = draw_gpu_processes_section(app, scr, y, x, height, &snap, bw);
+    /* Inter-section spacing: one blank row between boxes (gap 2) whenever
+     * everything fits comfortably; on short terminals drop the blank rows
+     * (gap 1) and hand the three reclaimed rows back to the budget.
+     * 12 = title rows + memory section in full + the three blank rows. */
+    int cpu_full = 4 + (snap.sys.core_count + 1) / 2; /* chrome + 2-col rows + footer */
+    int gap = height >= 12 + cpu_full + gpu_need + proc_min ? 2 : 1;
+    int save = 2 - gap;
+
+    y = draw_memory_section(app, scr, y, x, height - 6 - gpu_need - proc_min + 3 * save, &snap, bw, gap);
+    y = draw_cpu_section(app, scr, y, x, height - gpu_need - proc_min + 2 * save, &snap, bw, gap);
+    y = draw_gpu_section(app, scr, y, x, height - proc_min + save, &snap, bw, gap);
+    y = draw_gpu_processes_section(app, scr, y, x, height, &snap, bw, gap);
 
     char footer[256];
     char iv[32];

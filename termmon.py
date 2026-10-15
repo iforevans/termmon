@@ -72,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.24.2"
+__version__ = "1.25.0"
 __author__ = "Ifor Evans"
 
 
@@ -1342,7 +1342,7 @@ class TermMon:
         # Restore the 50ms timeout the main loop expects
         stdscr.timeout(50)
     
-    def _draw_memory_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int) -> int:
+    def _draw_memory_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int, gap: int = 2) -> int:
         """
         Draw the system memory monitoring section.
 
@@ -1503,13 +1503,13 @@ class TermMon:
 
         # Box footer
         self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
-        y += 2
+        y += gap
 
         return y
     
-    def _draw_cpu_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int) -> int:
+    def _draw_cpu_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int, gap: int = 2) -> int:
         """
-        Draw the CPU monitoring section (overall + per-core in 2 columns).
+        Draw the CPU monitoring section (overall + per-core in up to 3 columns).
 
         Args:
             stdscr: Curses window
@@ -1560,19 +1560,30 @@ class TermMon:
         label_width = len(f"Core {max(0, core_count - 1)}:") + 1
         pct_len = len(f" {100.0:5.1f}%")
 
-        # A cell needs label + a usable bar + percentage. If two of them don't
-        # fit, drop to a single column of cores.
+        # A cell needs label + a usable bar + percentage. Pack cores into as
+        # many columns as the width allows; when the two-column rows would not
+        # fit the height we were given, go to three (shorter) columns so more
+        # cores stay visible on short terminals.
         min_cell = label_width + MIN_BAR_WIDTH + pct_len
-        two_col = content_width >= (min_cell * 2 + gap_width)
+        n_cols = 1
+        if content_width >= min_cell * 2 + gap_width:
+            n_cols = 2
+        if (n_cols == 2
+                and content_width >= min_cell * 3 + 2 * gap_width
+                and (core_count + 1) // 2 > (height - 3) - y):
+            n_cols = 3
 
-        if two_col:
-            col_width = (content_width - gap_width) // 2
-            right_width = content_width - gap_width - col_width
-            rows = (core_count + 1) // 2
-        else:
-            col_width = content_width
-            right_width = 0
-            rows = core_count
+        rows = (core_count + n_cols - 1) // n_cols
+        rem = content_width - gap_width * (n_cols - 1)
+        col_widths = [rem // n_cols] * n_cols
+        # odd remainder widens the right-hand cells, matching the old 2-col rule
+        for c in range(n_cols - 1, -1, -1):
+            if rem - sum(col_widths) <= 0:
+                break
+            col_widths[c] += 1
+        col_x = [0] * n_cols
+        for c in range(1, n_cols):
+            col_x[c] = col_x[c - 1] + col_widths[c - 1] + gap_width
 
         def bar_parts(percent: float, width: int) -> Tuple[str, int]:
             pct = max(0, min(100, percent))
@@ -1603,45 +1614,36 @@ class TermMon:
             if y >= height - 3:
                 break  # Don't draw off-screen
 
-            left = "".ljust(col_width)
-            left_bar_start = 0
-            left_filled = 0
-            if i < len(per_core):
-                core_id, core_pct = per_core[i]
-                left, left_bar_start, left_filled = core_cell(core_id, core_pct, col_width)
-
-            if two_col:
-                right = "".ljust(right_width)
-                right_bar_start = 0
-                right_filled = 0
-                right_idx = i + rows
-                if right_idx < len(per_core):
-                    core_id, core_pct = per_core[right_idx]
-                    right, right_bar_start, right_filled = core_cell(core_id, core_pct, right_width)
-                line = "│ " + left + " " * gap_width + right + " │"
-            else:
-                right_bar_start = right_filled = 0
-                line = "│ " + left + " │"
-
+            cells = []
+            overlays = []
+            for c in range(n_cols):
+                idx = i + c * rows
+                if idx < len(per_core):
+                    core_id, core_pct = per_core[idx]
+                    text, bar_start, filled = core_cell(core_id, core_pct, col_widths[c])
+                else:
+                    text, bar_start, filled = "".ljust(col_widths[c]), 0, 0
+                cells.append(text)
+                overlays.append((bar_start, filled))
+            line = "│ " + (" " * gap_width).join(cells) + " │"
             self._safe_addstr(stdscr, y, x, line[:bw], 0, right_edge)
 
             # Overlay only the filled bar blocks with the CPU colour. The +2
             # accounts for the border plus the 1-space left padding.
-            if left_filled > 0:
-                self._safe_addstr(
-                    stdscr, y, x + 2 + left_bar_start, "█" * left_filled,
-                    cpu_attr, x + bw - 1,
-                )
-            if two_col and right_filled > 0:
-                right_x = x + 2 + col_width + gap_width + right_bar_start
-                self._safe_addstr(
-                    stdscr, y, right_x, "█" * right_filled, cpu_attr, x + bw - 1,
-                )
+            cx = 2
+            for c in range(n_cols):
+                bar_start, filled = overlays[c]
+                if filled > 0:
+                    self._safe_addstr(
+                        stdscr, y, x + cx + bar_start, "█" * filled,
+                        cpu_attr, x + bw - 1,
+                    )
+                cx += col_widths[c] + gap_width
             y += 1
 
         # Box footer
         self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
-        y += 2
+        y += gap
 
         return y
     
@@ -1664,7 +1666,7 @@ class TermMon:
             return 'No GPU data available (powermetrics may need entitlements)'
         return 'No GPU detected or GPU monitoring unavailable'
 
-    def _draw_gpu_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int) -> int:
+    def _draw_gpu_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int, gap: int = 2) -> int:
         """
         Draw the GPU monitoring section (2-column layout).
 
@@ -1813,7 +1815,7 @@ class TermMon:
 
         # Box footer
         self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
-        y += 2
+        y += gap
 
         return y
     
@@ -1863,7 +1865,7 @@ class TermMon:
         cmd_width = max(1, view_width - self._GPU_PROCESS_FIXED_HEADER_LEN)
         return max(0, max((len(self._process_command(proc)) for proc in gpuprocs), default=0) - cmd_width)
 
-    def _draw_gpu_processes_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int) -> int:
+    def _draw_gpu_processes_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int, gap: int = 2) -> int:
         """
         Draw the GPU processes section as an nvtop-style horizontally scrollable table.
 
@@ -1917,7 +1919,7 @@ class TermMon:
 
         # Box footer
         self._safe_addstr(stdscr, y, x, "└" + "─" * (bw - 2) + "┘", 0, right_edge)
-        y += 2
+        y += gap
 
         return y
     
@@ -1986,17 +1988,25 @@ class TermMon:
         n_gpus = len(snapshot['gpu_data'])
         gpu_need = 3 * n_gpus + 3 if n_gpus else 6
 
+        # Inter-section spacing: one blank row between boxes (gap 2) whenever
+        # everything fits comfortably; on short terminals drop the blank rows
+        # (gap 1) and hand the three reclaimed rows back to the budget.
+        # 12 = title rows + memory section in full + the three blank rows.
+        cpu_full = 4 + (snapshot['system_data'].get('core_count', 0) + 1) // 2
+        gap = 2 if height >= 12 + cpu_full + gpu_need + proc_min else 1
+        save = 2 - gap
+
         # Draw system memory section
-        y = self._draw_memory_section(stdscr, y, x, height - 6 - gpu_need - proc_min, snapshot, self._box_width)
+        y = self._draw_memory_section(stdscr, y, x, height - 6 - gpu_need - proc_min + 3 * save, snapshot, self._box_width, gap)
 
         # Draw CPU section
-        y = self._draw_cpu_section(stdscr, y, x, height - gpu_need - proc_min, snapshot, self._box_width)
+        y = self._draw_cpu_section(stdscr, y, x, height - gpu_need - proc_min + 2 * save, snapshot, self._box_width, gap)
 
         # Draw GPU section
-        y = self._draw_gpu_section(stdscr, y, x, height - proc_min, snapshot, self._box_width)
+        y = self._draw_gpu_section(stdscr, y, x, height - proc_min + save, snapshot, self._box_width, gap)
 
         # Draw GPU processes section
-        y = self._draw_gpu_processes_section(stdscr, y, x, height, snapshot, self._box_width)
+        y = self._draw_gpu_processes_section(stdscr, y, x, height, snapshot, self._box_width, gap)
 
         # Footer
         footer = f" Refresh: {REFRESH_INTERVAL}s | q:quit r:rate h:help ←/→:process scroll "
