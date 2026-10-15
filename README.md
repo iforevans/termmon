@@ -14,7 +14,7 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
   - Shows PID, user, GPU memory, host memory, and command
   - Sorted by VRAM usage (descending)
 - **Color-coded progress bars**: Visual feedback for resource usage
-- **Fully responsive layout**: Reflows to any terminal size (nvtop-style) — resize freely, content never wraps or overwrites itself. Degrades gracefully from ultra-wide down to ~28 columns
+- **Fully responsive layout**: Reflows to any terminal size (nvtop-style) — resize freely, content never wraps or overwrites itself. Degrades gracefully from ultra-wide down to ~28 columns; on short terminals the GPU process table and VRAM bars are space-reserved and the CPU core rows absorb the squeeze
 - **Auto-refresh**: Updates every second by default — configurable at launch (`-i`/`--interval SECONDS`, 0.5–60) or interactively with `r`
 - **Native C port (Linux + macOS)**: small ELF/Mach-O binary against `ncurses` — no Python runtime needed. On Linux, verified to render **byte-identical** to the Python reference
 - **Python reference**: `termmon.py` stays in-tree as the golden reference renderer
@@ -81,7 +81,7 @@ The layout is **fully responsive** — it reflows to whatever size your terminal
 At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, cores run in two columns, and GPU Util/VRAM share a row:
 
 ```
- termmon 1.24.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
+ termmon 1.24.2 - System Monitor | 14:32:07 | q:quit r:rate h:help
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                              │
  │────────────────────────────────────────────────────────────────────────────│
@@ -116,7 +116,7 @@ At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, 
 Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GPU title drops segments, and Util/VRAM take their own rows — no wrapping, no overwritten content:
 
 ```
- termmon 1.24.0 | 14:32:07
+ termmon 1.24.2 | 14:32:07
  ┌──────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                │
  │──────────────────────────────────────────────│
@@ -225,6 +225,12 @@ python3 tests/test_pty_layout.py --show 80
 The C golden harness feeds both renderers the same fixture (`TERMMON_FIXTURE=…`) and diffs the pyte-parsed screen row-for-row — the strongest guarantee the port is behaviourally identical. The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.24.2 (2026-10-15)
+- **Process table no longer starved on short terminals**: with the footer visible but the GPU-process rows gone (Termius on iPad at ~38 rows), the cause was vertical-space starvation, not size detection — the CPU core rows and GPU bars draw first and consumed every line, and the process section's `height - 3` guards then silently dropped its rows down to just the header. The frame now budgets bottom-up: the process table reserves its minimum viable height (chrome + up to 3 rows + footers) and the GPU section reserves enough to show every GPU in full; the CPU core rows — the most expendable content — absorb the squeeze first. GPU and process sections may now draw down to `height - 2` (the app footer needs only the last row, not three). Verified in real PTYs at 26/30/34/38 rows: process rows render at every height; golden C-vs-Python still byte-identical.
+
+### v1.24.1 (2026-10-15)
+- **Self-heal missed `SIGWINCH` (Termius/iPad bottom cut-off)**: mobile terminals sometimes change the PTY geometry without delivering `SIGWINCH` to the app — toggling the on-screen keyboard, backgrounding/foregrounding, rotating — leaving termmon laying out for a stale, taller screen so the bottom rows (GPU processes table, footer) fell below the visible viewport. Both implementations now poll `TIOCGWINSZ` every frame (one cheap ioctl) and re-sync curses only when the size actually differs; the signal handler is kept to wake input and force an immediate redraw. New PTY regression test blocks `SIGWINCH` in the child before exec, resizes, and asserts the screen re-lays out (footer pinned to the new last row) — passes for both the C binary and the Python reference.
 
 ### v1.24.0 (2026-09-24)
 - **Memory labels: GiB → GB**: the stacked-RAM legend (`Used: … GB | Cache: … GB | Free: … GB`) and the `Total: … GB | Available: … GB` row now read GB, matching the dashboard's existing GB convention (VRAM/swap already display GB). Labels only — the underlying values are unchanged binary quantities (KiB/1024²). Identical in both implementations; golden tests confirm C and Python still render byte-for-byte the same.

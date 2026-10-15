@@ -84,7 +84,7 @@ def _child_script_path():
     return path
 
 
-def spawn(cols, rows, extra_args=()):
+def spawn(cols, rows, extra_args=(), block_winch=False):
     """Fork termmon into a real PTY at the given size. Returns (pid, fd)."""
     script = _child_script_path()
     pid, fd = pty.fork()
@@ -92,6 +92,12 @@ def spawn(cols, rows, extra_args=()):
         os.environ['TERM'] = 'xterm-256color'
         os.environ['LANG'] = 'en_US.UTF-8'
         os.environ['PYTHONIOENCODING'] = 'utf-8'
+        if block_winch:
+            # Simulate mobile terminals (e.g. Termius on iPad) that change
+            # the PTY geometry without the app ever seeing SIGWINCH. The
+            # signal stays pending and only the per-frame size poll can
+            # re-layout the screen.
+            signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGWINCH})
         if BIN_PATH:
             os.execv(BIN_PATH, [BIN_PATH, *extra_args])
         else:
@@ -154,15 +160,18 @@ def check_screen(screen, cols, rows, label):
     return problems
 
 
-def render(cols, rows, resize_from=None, show=False):
+def render(cols, rows, resize_from=None, show=False, no_signal=False):
     """Run termmon at (cols, rows), optionally after a live resize."""
     if resize_from:
-        pid, fd = spawn(*resize_from)
+        pid, fd = spawn(*resize_from, block_winch=no_signal)
         drain(fd, 1.5)                 # let it draw at the original size
         set_size(fd, cols, rows)       # SIGWINCH -> app must re-layout
-        os.kill(pid, signal.SIGWINCH)
+        if not no_signal:
+            os.kill(pid, signal.SIGWINCH)
         data = drain(fd, 2.0)
         label = f"{resize_from[0]}x{resize_from[1]}->{cols}x{rows}"
+        if no_signal:
+            label += " (no SIGWINCH)"
     else:
         pid, fd = spawn(cols, rows)
         data = drain(fd, 2.0)
@@ -223,6 +232,25 @@ def main():
                        ((100, 34), (30, 22)), ((80, 30), (45, 24)),
                        ((60, 28), (110, 36))]:
         problems, _ = render(end[0], end[1], resize_from=start)
+        status = "clean" if not problems else f"FAIL ({len(problems)})"
+        print(f"  {start[0]}x{start[1]} -> {end[0]}x{end[1]} : {status}")
+        for p in problems[:3]:
+            print(f"      {p}")
+        failures += len(problems)
+
+    # 3. Resize with SIGWINCH blocked — the Termius-on-iPad failure mode:
+    # the PTY geometry changes but the app never gets the signal, so only
+    # the per-frame size poll can save it. The footer is pinned to the last
+    # row, so seeing it there proves the app re-laid out for the new height.
+    print("\n  resizes with SIGWINCH blocked (missed-signal self-heal):")
+    for start, end in [((120, 40), (60, 28)), ((80, 30), (45, 24)),
+                       ((100, 34), (60, 26))]:
+        problems, screen = render(end[0], end[1], resize_from=start,
+                                  no_signal=True)
+        if 'q:quit' not in screen.display[end[1] - 1]:
+            problems.append(
+                f"{end[0]}x{end[1]} (no SIGWINCH): footer not on last row "
+                f"— app still laid out for {start[1]} rows")
         status = "clean" if not problems else f"FAIL ({len(problems)})"
         print(f"  {start[0]}x{start[1]} -> {end[0]}x{end[1]} : {status}")
         for p in problems[:3]:

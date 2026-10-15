@@ -72,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.24.0"
+__version__ = "1.24.2"
 __author__ = "Ifor Evans"
 
 
@@ -239,6 +239,26 @@ class TermMon:
             stdscr.clear()
         except curses.error:
             pass
+
+    def _sync_terminal_size(self, stdscr) -> None:
+        """
+        Re-synchronise curses with the kernel's window size if it changed.
+
+        Mobile terminals (e.g. Termius on iPad) sometimes change the PTY
+        geometry without delivering SIGWINCH to the app — toggling the
+        on-screen keyboard, backgrounding/foregrounding, rotating — which
+        leaves the app laying out for a stale, taller screen and the bottom
+        rows get cut off. Polling TIOCGWINSZ every frame (one cheap ioctl)
+        self-heals within one frame.
+        """
+        size = self._true_terminal_size()
+        if size is None:
+            return
+        rows, cols = size
+        cur_rows, cur_cols = stdscr.getmaxyx()
+        if rows == cur_rows and cols == cur_cols:
+            return
+        self._apply_resize(stdscr)
 
     @staticmethod
     def _get_core_count() -> int:
@@ -1675,7 +1695,7 @@ class TermMon:
             y += 1
         else:
             for gpu in gpu_data:
-                if y >= height - 3:
+                if y >= height - 2:
                     break
                 is_uma = gpu.get('is_uma', False)
                 gpu_cores = gpu.get('gpu_cores', 0)
@@ -1706,7 +1726,7 @@ class TermMon:
 
                 self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
                 y += 1
-                if y >= height - 3:
+                if y >= height - 2:
                     break
 
                 # --- Row 2: Util (left) | VRAM or UMA info (right) ---
@@ -1732,7 +1752,7 @@ class TermMon:
                     else:
                         self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
                         y += 1
-                        if y < height - 3:
+                        if y < height - 2:
                             self._safe_addstr(stdscr, y, x, "│" + " " * (bw - 2) + "│", 0, right_edge)
                             self._safe_addstr(stdscr, y, x, "│ " + uma_text[:bw - 4], 0, border_x)
                             self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
@@ -1771,7 +1791,7 @@ class TermMon:
                     else:
                         self._safe_addstr(stdscr, y, border_x, "│", 0, right_edge)
                         y += 1
-                        if y < height - 3:
+                        if y < height - 2:
                             # VRAM gets its own row when narrow.
                             vram_overhead = 7 + len(vram_info) + 1
                             vram_bar_w = self._bar_width(bw, False, vram_overhead)
@@ -1787,7 +1807,7 @@ class TermMon:
                             y += 1
 
                 # Separator between GPUs (if more GPUs and space available)
-                if y < height - 3 and int(gpu['idx']) < len(gpu_data) - 1:
+                if y < height - 2 and int(gpu['idx']) < len(gpu_data) - 1:
                     self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
                     y += 1
 
@@ -1877,17 +1897,18 @@ class TermMon:
         self._safe_addstr(stdscr, y, x, ("│ " + hdr).ljust(bw - 1)[:bw - 1] + "│", 0, right_edge)
         y += 1
 
-        if y < height - 3:
+        # The app footer needs only the last row, so content may use height-2.
+        if y < height - 2:
             self._safe_addstr(stdscr, y, x, "│" + "─" * (bw - 2) + "│", 0, right_edge)
             y += 1
 
         if not gpuprocs:
-            if y < height - 3:
+            if y < height - 2:
                 self._draw_scrolled_process_line(stdscr, y, x, "", "No active GPU compute processes", bw)
                 y += 1
         else:
             for proc in gpuprocs:
-                if y >= height - 3:
+                if y >= height - 2:
                     break  # Don't draw off-screen
                 self._draw_scrolled_process_line(
                     stdscr, y, x, self._gpu_process_fixed_prefix(proc), self._process_command(proc), bw,
@@ -1951,14 +1972,28 @@ class TermMon:
         if x + self._box_width > width:
             x = max(0, width - self._box_width)
 
+        # Vertical budget: the process table is the point of this dashboard,
+        # so reserve its minimum viable height (chrome + up to 3 rows +
+        # footers) and let the CPU/GPU sections clip against that. Without
+        # the reserve a short terminal (e.g. Termius on an iPad) lets the CPU
+        # core rows eat every line and the process table silently degrades to
+        # just its header.
+        want = max(1, min(3, len(snapshot['gpu_processes'])))
+        proc_min = 7 + want  # header+title+rule+colhdr+rule+rows+box footer + app footer
+        # What the GPU section needs to show every GPU in full: chrome + 2 rows
+        # per GPU + inter-GPU rules. The CPU core rows are the most expendable
+        # content on the screen, so they absorb the squeeze first.
+        n_gpus = len(snapshot['gpu_data'])
+        gpu_need = 3 * n_gpus + 3 if n_gpus else 6
+
         # Draw system memory section
-        y = self._draw_memory_section(stdscr, y, x, height, snapshot, self._box_width)
+        y = self._draw_memory_section(stdscr, y, x, height - 6 - gpu_need - proc_min, snapshot, self._box_width)
 
         # Draw CPU section
-        y = self._draw_cpu_section(stdscr, y, x, height, snapshot, self._box_width)
+        y = self._draw_cpu_section(stdscr, y, x, height - gpu_need - proc_min, snapshot, self._box_width)
 
         # Draw GPU section
-        y = self._draw_gpu_section(stdscr, y, x, height, snapshot, self._box_width)
+        y = self._draw_gpu_section(stdscr, y, x, height - proc_min, snapshot, self._box_width)
 
         # Draw GPU processes section
         y = self._draw_gpu_processes_section(stdscr, y, x, height, snapshot, self._box_width)
@@ -2024,12 +2059,15 @@ class TermMon:
             while self.running:
                 current_time = time.monotonic()
                 
-                # Handle terminal resize
+                # Handle terminal resize: SIGWINCH forces an immediate
+                # refresh, but also poll in case the signal never arrived.
                 if self._resized:
                     self._resized = False
                     self._apply_resize(stdscr)
                     self._stats_update_event.set()
                     last_refresh = current_time  # Force refresh on resize
+                else:
+                    self._sync_terminal_size(stdscr)
                 
                 # Trigger stats update every 2 seconds
                 if current_time - last_refresh >= REFRESH_INTERVAL:

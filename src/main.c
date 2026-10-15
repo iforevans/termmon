@@ -95,11 +95,23 @@ int true_terminal_size(int *rows, int *cols)
     return 0;
 }
 
-static void apply_resize(WINDOW *scr)
+/* Re-synchronise curses with the kernel's window size.
+
+ * Mobile terminals (e.g. Termius on iPad) sometimes change the PTY geometry
+ * without delivering SIGWINCH to the app — toggling the on-screen keyboard,
+ * backgrounding/foregrounding, rotating — which leaves us laying out for a
+ * stale, taller screen and the bottom rows get cut off. Polling TIOCGWINSZ
+ * every frame (one cheap ioctl) self-heals within one frame; the SIGWINCH
+ * flag is kept only to wake getch() and force a refresh sooner. */
+static void sync_terminal_size(WINDOW *scr)
 {
     int rows = 0, cols = 0;
     if (!true_terminal_size(&rows, &cols))
-        getmaxyx(scr, rows, cols);
+        return;
+    int h, w;
+    getmaxyx(scr, h, w);
+    if (rows == h && cols == w)
+        return;
     resizeterm(rows, cols);
     werase(scr);
 }
@@ -156,9 +168,9 @@ int main(int argc, char **argv)
 
         if (g_resized) {
             g_resized = 0;
-            apply_resize(scr);
             last_refresh = now;
         }
+        sync_terminal_size(scr);
 
         if (now - last_refresh >= g_refresh_interval) {
             last_refresh = now;

@@ -599,7 +599,7 @@ static int draw_gpu_section(App *app, WINDOW *scr, int y, int x, int height,
     } else {
         for (int g = 0; g < snap->n_gpus; g++) {
             const Gpu *gpu = &snap->gpus[g];
-            if (y >= height - 3)
+            if (y >= height - 2)
                 break;
 
             /* Row 1: name | Util | Temp | Power, dropping segments to fit */
@@ -644,7 +644,7 @@ static int draw_gpu_section(App *app, WINDOW *scr, int y, int x, int height,
             safe_addstr(scr, y, x, line, 0, border_x);
             safe_addstr(scr, y, border_x, "│", 0, right_edge);
             y += 1;
-            if (y >= height - 3)
+            if (y >= height - 2)
                 break;
 
             /* Row 2: Util bar (left) | VRAM or UMA info (right, when wide) */
@@ -676,7 +676,7 @@ static int draw_gpu_section(App *app, WINDOW *scr, int y, int x, int height,
                 } else {
                     safe_addstr(scr, y, border_x, "│", 0, right_edge);
                     y += 1;
-                    if (y < height - 3) {
+                    if (y < height - 2) {
                         char uma_clip[160];
                         u8_clip(uma_clip, sizeof uma_clip, uma_text, bw - 4);
                         blank_row(scr, y, x, bw, right_edge);
@@ -724,7 +724,7 @@ static int draw_gpu_section(App *app, WINDOW *scr, int y, int x, int height,
                 } else {
                     safe_addstr(scr, y, border_x, "│", 0, right_edge);
                     y += 1;
-                    if (y < height - 3) {
+                    if (y < height - 2) {
                         int vram_overhead = 7 + (int)strlen(vram_info) + 1;
                         int vram_bar_w = bar_width(bw, 0, vram_overhead);
                         blank_row(scr, y, x, bw, right_edge);
@@ -739,7 +739,7 @@ static int draw_gpu_section(App *app, WINDOW *scr, int y, int x, int height,
                 }
             }
 
-            if (y < height - 3 && atoi(gpu->idx) < snap->n_gpus - 1) {
+            if (y < height - 2 && atoi(gpu->idx) < snap->n_gpus - 1) {
                 box_rule(scr, y, x, bw, right_edge);
                 y += 1;
             }
@@ -810,13 +810,14 @@ static int draw_gpu_processes_section(App *app, WINDOW *scr, int y, int x,
     safe_addstr(scr, y, x, line, 0, right_edge);
     y += 1;
 
-    if (y < height - 3) {
+    /* The app footer needs only the last row, so content may use height-2. */
+    if (y < height - 2) {
         box_rule(scr, y, x, bw, right_edge);
         y += 1;
     }
 
     if (snap->n_procs == 0) {
-        if (y < height - 3) {
+        if (y < height - 2) {
             draw_scrolled_process_line(scr, y, x, app->process_scroll_x, "",
                                        "No active GPU compute processes", bw);
             y += 1;
@@ -825,7 +826,7 @@ static int draw_gpu_processes_section(App *app, WINDOW *scr, int y, int x,
         for (int i = 0; i < snap->n_procs; i++) {
             char fixed[128];
             char command[1024];
-            if (y >= height - 3)
+            if (y >= height - 2)
                 break;
             gpu_process_fixed_prefix(fixed, sizeof fixed, &snap->procs[i]);
             proc_command(command, sizeof command, &snap->procs[i]);
@@ -899,9 +900,21 @@ void draw(App *app, WINDOW *scr)
             x = 0;
     }
 
-    y = draw_memory_section(app, scr, y, x, height, &snap, bw);
-    y = draw_cpu_section(app, scr, y, x, height, &snap, bw);
-    y = draw_gpu_section(app, scr, y, x, height, &snap, bw);
+    /* Vertical budget: the process table is the point of this dashboard, so
+     * reserve its minimum viable height (chrome + up to 3 rows + footers)
+     * and let the CPU/GPU sections clip against that. Without the reserve a
+     * short terminal (e.g. Termius on an iPad) lets the CPU core rows eat
+     * every line and the process table silently degrades to just its header. */
+    int want = snap.n_procs > 3 ? 3 : (snap.n_procs < 1 ? 1 : snap.n_procs);
+    int proc_min = 7 + want; /* header+title+rule+colhdr+rule+rows+box footer + app footer */
+    /* What the GPU section needs to show every GPU in full: chrome + 2 rows
+     * per GPU + inter-GPU rules. The CPU core rows are the most expendable
+     * content on the screen, so they absorb the squeeze first. */
+    int gpu_need = snap.n_gpus > 0 ? 3 * snap.n_gpus + 3 : 6;
+
+    y = draw_memory_section(app, scr, y, x, height - 6 - gpu_need - proc_min, &snap, bw);
+    y = draw_cpu_section(app, scr, y, x, height - gpu_need - proc_min, &snap, bw);
+    y = draw_gpu_section(app, scr, y, x, height - proc_min, &snap, bw);
     y = draw_gpu_processes_section(app, scr, y, x, height, &snap, bw);
 
     char footer[256];

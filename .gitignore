@@ -16,3 +16,4 @@ htmlcov/
 termmon
 tests/test_layout
 *.o
+STATUS.md
