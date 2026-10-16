@@ -339,9 +339,12 @@ class TermMon:
 
     # ---- NVIDIA backend (Linux) ----------------------------------------
 
-    def get_gpu_stats(self) -> None:
+    def get_gpu_stats(self) -> List[Dict[str, Any]]:
         """
-        Read GPU statistics.
+        Read GPU statistics and return the gpu_data list.
+
+        Never touches self.* — the caller publishes the result under
+        _stats_lock, so the draw path only ever sees lock-protected swaps.
 
         Linux (NVIDIA): uses nvidia-smi for VRAM, utilization, temperature, power.
         macOS (Apple):  uses macmon (preferred), socpwrbud, or powermetrics + sysctl
@@ -351,18 +354,17 @@ class TermMon:
         """
         try:
             if self._gpu_backend == 'nvidia':
-                self._get_gpu_stats_nvidia()
+                return self._get_gpu_stats_nvidia()
             elif self._gpu_backend == 'apple':
-                self._get_gpu_stats_apple()
-            else:
-                self.gpu_data = []
+                return self._get_gpu_stats_apple()
+            return []
         except KeyboardInterrupt:
             raise
         except Exception:
-            self.gpu_data = []
+            return []
 
-    def _get_gpu_stats_nvidia(self) -> None:
-        """Read NVIDIA GPU statistics using nvidia-smi."""
+    def _get_gpu_stats_nvidia(self) -> List[Dict[str, Any]]:
+        """Read NVIDIA GPU statistics using nvidia-smi; returns the gpu list."""
         result = subprocess.run(
             [
                 'nvidia-smi',
@@ -406,13 +408,13 @@ class TermMon:
                     })
                 except (ValueError, IndexError):
                     pass
-            self.gpu_data = gpus
+            return gpus
         else:
-            self.gpu_data = []
+            return []
 
-    def _get_gpu_stats_apple(self) -> None:
+    def _get_gpu_stats_apple(self) -> List[Dict[str, Any]]:
         """
-        Read Apple Silicon GPU statistics.
+        Read Apple Silicon GPU statistics; returns the gpu list.
 
         Uses powermetrics for GPU active percentage and power draw
         (single call, best effort — requires entitlement on newer macOS;
@@ -446,7 +448,7 @@ class TermMon:
             'is_uma': True,     # flag: Unified Memory Architecture
         })
 
-        self.gpu_data = gpus
+        return gpus
 
     @property
     def _apple_gpu_metadata(self) -> Tuple[str, int]:
@@ -649,9 +651,12 @@ class TermMon:
 
     # ---- GPU processes ------------------------------------------------
 
-    def get_gpu_processes(self) -> None:
+    def get_gpu_processes(self) -> List[Dict[str, Any]]:
         """
-        Read active GPU processes.
+        Read active GPU processes; returns the process list.
+
+        Never touches self.* — the caller publishes the result under
+        _stats_lock.
 
         Linux (NVIDIA): uses nvidia-smi --query-compute-apps, enriches with
         psutil for user, host memory, and command line.
@@ -660,15 +665,14 @@ class TermMon:
         """
         try:
             if self._gpu_backend == 'nvidia':
-                self._get_gpu_processes_nvidia()
+                return self._get_gpu_processes_nvidia()
             elif self._gpu_backend == 'apple':
-                self._get_gpu_processes_apple()
-            else:
-                self.gpu_processes = []
+                return self._get_gpu_processes_apple()
+            return []
         except KeyboardInterrupt:
             raise
         except Exception:
-            self.gpu_processes = []
+            return []
 
     @staticmethod
     def _seed_cpu_percent(pids: List[int]) -> None:
@@ -684,7 +688,7 @@ class TermMon:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
 
-    def _get_gpu_processes_nvidia(self) -> None:
+    def _get_gpu_processes_nvidia(self) -> List[Dict[str, Any]]:
         """Get NVIDIA GPU compute apps via nvidia-smi, enriched with psutil."""
         result = subprocess.run(
             [
@@ -727,13 +731,13 @@ class TermMon:
                         pass
 
             processes.sort(key=lambda x: x['mem_used'], reverse=True)
-            self.gpu_processes = processes[:MAX_GPU_PROCS]
+            return processes[:MAX_GPU_PROCS]
         else:
-            self.gpu_processes = []
+            return []
 
-    def _get_gpu_processes_apple(self) -> None:
+    def _get_gpu_processes_apple(self) -> List[Dict[str, Any]]:
         """
-        Get GPU-active processes on macOS.
+        Get GPU-active processes on macOS; returns the process list.
 
         Uses psutil to find processes, then filters for those with GPU
         activity (best-effort). On macOS, there's no per-process GPU memory
@@ -806,9 +810,9 @@ class TermMon:
                     'cmdline': cmdline,
                 })
 
-            self.gpu_processes = processes
+            return processes
         except Exception:
-            self.gpu_processes = []
+            return []
 
     @staticmethod
     def _enrich_process(pid: int, process_name: str, gpu_mem: float) -> Dict[str, Any]:
@@ -921,11 +925,7 @@ class TermMon:
 
             # --- GPU stats + processes (parallel) ---
             try:
-                self._get_gpu_data_parallel()
-                # Snapshot the just-written values (they live in self.* now)
-                with self._stats_lock:
-                    new_gpus = list(self.gpu_data)
-                    new_procs = list(self.gpu_processes)
+                new_gpus, new_procs = self._get_gpu_data_parallel()
             except KeyboardInterrupt:
                 raise
             except Exception as e:
@@ -1053,23 +1053,17 @@ class TermMon:
             'mem_percent': (used / total * 100.0) if total else 0.0,
         }
     
-    def _get_gpu_data_parallel(self) -> None:
-        """Run get_gpu_stats() and get_gpu_processes() concurrently."""
-        try:
-            futures = {
-                self._gpu_data_executor.submit(self.get_gpu_stats): 'stats',
-                self._gpu_data_executor.submit(self.get_gpu_processes): 'processes',
-            }
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except KeyboardInterrupt:
-                    raise
-                except Exception:
-                    # Errors handled inside each method
-                    pass
-        except KeyboardInterrupt:
-            raise
+    def _get_gpu_data_parallel(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Run get_gpu_stats() and get_gpu_processes() concurrently.
+
+        Returns (gpu_data, gpu_processes) for the caller to publish under
+        _stats_lock; the collectors never touch self.* themselves.
+        """
+        stats_future = self._gpu_data_executor.submit(self.get_gpu_stats)
+        procs_future = self._gpu_data_executor.submit(self.get_gpu_processes)
+        # Both methods swallow their own errors (returning []); a
+        # KeyboardInterrupt raised inside a worker re-raises via result().
+        return stats_future.result(), procs_future.result()
     
     def _safe_addstr(
             self, stdscr, y: int, x: int, text: str, attr: int = 0, max_x: int = 0
