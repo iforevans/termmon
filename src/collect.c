@@ -333,9 +333,20 @@ void collect_sys(SysData *s)
 
 /* ---------------- external commands ---------------- */
 
+/* Shutdown coordination (see stats_stop). g_stopping tells the collector
+ * "the app is quitting": run_cmd_capture refuses to spawn anything new, so
+ * a quit is never followed by the *next* scheduled nvidia-smi/macmon run.
+ * g_child_pid exposes the one in-flight child so stats_stop can SIGKILL it
+ * instead of waiting out its full poll deadline. Cleared before waitpid,
+ * so a pid read here is always still our unreaped child (never reusable). */
+static volatile int g_stopping;
+static volatile pid_t g_child_pid;
+
 static int run_cmd_capture(char *const argv[], char *buf, size_t cap,
                            int timeout_ms)
 {
+    if (g_stopping)
+        return -1;
     int p[2];
     if (pipe(p) != 0)
         return -1;
@@ -361,6 +372,7 @@ static int run_cmd_capture(char *const argv[], char *buf, size_t cap,
         _exit(127);
     }
     close(p[1]);
+    g_child_pid = pid;
 
     size_t len = 0;
     int timed_out = 0;
@@ -401,6 +413,7 @@ read_done:
     close(p[0]);
     if (timed_out)
         kill(pid, SIGKILL);
+    g_child_pid = 0;
     int status;
     if (waitpid(pid, &status, 0) < 0)
         return -1;
@@ -1257,6 +1270,7 @@ void stats_init(Stats *st)
     pthread_cond_init(&st->cond, NULL);
     st->pending = 0;
     st->running = 0;
+    st->finished = 0;
     memset(&st->sys, 0, sizeof st->sys);
     st->n_gpus = 0;
     st->n_procs = 0;
@@ -1308,6 +1322,10 @@ static void *stats_thread(void *arg)
         st->n_procs = n_procs;
         pthread_mutex_unlock(&st->lock);
     }
+    pthread_mutex_lock(&st->lock);
+    st->finished = 1;
+    pthread_cond_broadcast(&st->cond);
+    pthread_mutex_unlock(&st->lock);
     return NULL;
 }
 
@@ -1334,17 +1352,61 @@ void stats_request(Stats *st)
     pthread_mutex_unlock(&st->lock);
 }
 
+/* Wait up to ms milliseconds for the worker to signal it exited.
+ * Returns 1 when finished, 0 on timeout. */
+static int stats_wait_finished(Stats *st, int ms)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += ms / 1000;
+    ts.tv_nsec += (long)(ms % 1000) * 1000 * 1000;
+    if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_nsec -= 1000000000L;
+        ts.tv_sec += 1;
+    }
+    pthread_mutex_lock(&st->lock);
+    while (!st->finished) {
+        /* Any non-zero return (ETIMEDOUT or EINVAL) ends the wait; never
+         * loop on an error — timedwait returns with the mutex held. */
+        if (pthread_cond_timedwait(&st->cond, &st->lock, &ts) != 0)
+            break;
+    }
+    int finished = st->finished;
+    pthread_mutex_unlock(&st->lock);
+    return finished;
+}
+
 void stats_stop(Stats *st)
 {
+    g_stopping = 1;
     pthread_mutex_lock(&st->lock);
     st->running = 0;
     st->pending = 1;
     pthread_cond_broadcast(&st->cond);
     pthread_mutex_unlock(&st->lock);
-    if (st->thread_started) {
+
+    if (!st->thread_started)
+        return;
+
+    /* Bound the wait like the Python reference's join(timeout=2): the
+     * worker may be parked inside a subprocess poll deadline (up to 5s
+     * per nvidia-smi call, two per refresh — ~10s of frozen screen on
+     * quit before). Give the worker a short grace to finish the current
+     * pass; if it is still stuck behind a child process, SIGKILL that
+     * child so the worker returns, then rejoin. Detaching is the last
+     * resort so quitting can never hang the UI. */
+    if (!stats_wait_finished(st, 200)) {
+        pid_t child = g_child_pid;
+        if (child > 0)
+            kill(child, SIGKILL);
+        if (stats_wait_finished(st, 2000))
+            pthread_join(st->tid, NULL);
+        else
+            pthread_detach(st->tid);
+    } else {
         pthread_join(st->tid, NULL);
-        st->thread_started = 0;
     }
+    st->thread_started = 0;
 }
 
 int gpu_backend_nvidia(void)

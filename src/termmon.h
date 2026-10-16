@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include <time.h>
 
-#define TERMMON_VERSION "1.25.0"
+#define TERMMON_VERSION "1.25.1"
 
 #define BAR_WIDTH 20
 #define MIN_BAR_WIDTH 5
@@ -78,6 +78,7 @@ typedef struct {
     int thread_started;
     int pending;
     int running;
+    int finished; /* worker sets this before exit; stats_stop waits on it */
     SysData sys;
     Gpu gpus[MAX_GPUS];
     int n_gpus;

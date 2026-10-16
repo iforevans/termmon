@@ -24,6 +24,8 @@ clean:
 test: tests/test_layout $(BIN)
 	./tests/test_layout
 	python3 tests/test_golden.py
+	python3 tests/test_responsive_layout.py
+	python3 tests/test_mem_stacking.py
 	python3 tests/test_pty_layout.py
 	python3 tests/test_pty_layout.py --bin ./$(BIN)
 

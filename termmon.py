@@ -72,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.25.0"
+__version__ = "1.25.1"
 __author__ = "Ifor Evans"
 
 
@@ -2047,6 +2047,7 @@ class TermMon:
         curses.init_pair(COLOR_MEM_FREE, curses.COLOR_WHITE, -1)
         
         curses.cbreak()
+        curses.noecho()  # keep typed keys off-screen (mirrors the C port)
         stdscr.keypad(True)
         # Use timeout instead of nodelay to avoid blocking on input
         # getch() will return -1 after 50ms if no input

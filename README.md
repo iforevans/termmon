@@ -81,7 +81,7 @@ The layout is **fully responsive** — it reflows to whatever size your terminal
 At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, cores run in two columns, and Util/VRAM take their own rows:
 
 ```
- termmon 1.25.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
+ termmon 1.25.1 - System Monitor | 14:32:07 | q:quit r:rate h:help
 
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                              │
@@ -126,7 +126,7 @@ At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, 
 Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GPU title drops segments, and the footer compacts — no wrapping, no overwritten content:
 
 ```
- termmon 1.25.0 | 14:32:07
+ termmon 1.25.1 | 14:32:07
 
  ┌──────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                │
@@ -171,7 +171,7 @@ Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GP
 On short terminals (Termius on an iPad, 34 rows here) the blank rows between sections disappear and the cores pack into three narrower columns, so every core stays visible while the GPU process table keeps its space:
 
 ```
- termmon 1.25.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
+ termmon 1.25.1 - System Monitor | 14:32:07 | q:quit r:rate h:help
 
  ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                                                            │
@@ -285,6 +285,11 @@ python3 tests/test_pty_layout.py --show 80
 The C golden harness feeds both renderers the same fixture (`TERMMON_FIXTURE=…`) and diffs the pyte-parsed screen row-for-row — the strongest guarantee the port is behaviourally identical. The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.25.1 (2026-10-16)
+- **Bounded shutdown in the C port**: quitting (`q`/Ctrl+C) while the collector was parked inside an `nvidia-smi` poll deadline blocked `stats_stop`'s `pthread_join` for the full deadline — two sequential 5s queries meant up to ~10s of frozen screen on systems with a slow or hung driver. Shutdown now mirrors the Python reference's `join(timeout=2)`: a `g_stopping` flag stops `run_cmd_capture` from spawning anything new, the in-flight child is exposed via `g_child_pid` and SIGKILLed after a 200ms grace, and the worker signals a `finished` flag on a condvar so the join wait is event-driven (200ms + 2s bound, detach as last resort). Measured with a deliberately hung `nvidia-smi`: **9.1s → 0.22s** to exit after `q`; the normal path is 20ms.
+- **`make test` runs everything**: the target silently omitted `tests/test_responsive_layout.py` (2,820-config mock sweep) and `tests/test_mem_stacking.py` even though the README claimed one command covers all harnesses. Both are wired in now; all six harnesses green.
+- **Python reference: `curses.noecho()`**: the C port always called `noecho()`; the Python reference never did, so ncurses transiently echoed typed keys at the cursor between frames (invisible to the golden tests, which snapshot after full redraws). One line in `run()`, restoring strict C-vs-Python behavioural parity.
 
 ### v1.25.0 (2026-10-15)
 - **Short terminals: no wasted rows, three-column CPU**: the v1.24.x fixes kept the process table alive on a Termius/iPad screen but paid for it with core rows clipped (6 of 16 visible at 110×38) while blank separator rows between the boxes went unused. Two changes, identical in both implementations: (1) the one blank row between sections is dropped when the terminal is too short to show everything comfortably, and the three reclaimed rows go back into the CPU/GPU budgets — at 110×38 every core is visible again; (2) when the two-column core rows still don't fit the height left for the CPU box, cores pack into three narrower columns (gauges shorten to match), so 16 cores need 6 rows instead of 8. The compact/3-column modes trigger only under height pressure — roomy terminals render exactly as before. Golden C-vs-Python byte-identical at all nine test sizes; verified in real PTYs at 26/30/34/38 rows.
