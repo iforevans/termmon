@@ -81,7 +81,7 @@ The layout is **fully responsive** — it reflows to whatever size your terminal
 At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, cores run in two columns, and Util/VRAM take their own rows:
 
 ```
- termmon 1.25.1 - System Monitor | 14:32:07 | q:quit r:rate h:help
+ termmon 1.25.2 - System Monitor | 14:32:07 | q:quit r:rate h:help
 
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                              │
@@ -126,7 +126,7 @@ At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, 
 Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GPU title drops segments, and the footer compacts — no wrapping, no overwritten content:
 
 ```
- termmon 1.25.1 | 14:32:07
+ termmon 1.25.2 | 14:32:07
 
  ┌──────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                │
@@ -171,7 +171,7 @@ Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GP
 On short terminals (Termius on an iPad, 34 rows here) the blank rows between sections disappear and the cores pack into three narrower columns, so every core stays visible while the GPU process table keeps its space:
 
 ```
- termmon 1.25.1 - System Monitor | 14:32:07 | q:quit r:rate h:help
+ termmon 1.25.2 - System Monitor | 14:32:07 | q:quit r:rate h:help
 
  ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                                                            │
@@ -285,6 +285,10 @@ python3 tests/test_pty_layout.py --show 80
 The C golden harness feeds both renderers the same fixture (`TERMMON_FIXTURE=…`) and diffs the pyte-parsed screen row-for-row — the strongest guarantee the port is behaviourally identical. The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.25.2 (2026-10-16)
+- **Dead code and stale docs removed** (code-review follow-up): the C main loop's vestigial refresh-interval block is gone — cadence lives in the collector thread, and the block only re-stamped a timestamp nothing read; the Python reference lost its unreachable `gpu_pct` branch (the process table's GPU column is always `--`, matching the C port) plus four stale docstrings (2s refresh, 0.2s clamp floor, "Force refresh"). No behavior change.
+- **Python thread hygiene**: `get_gpu_stats`/`get_gpu_processes` and their per-backend helpers no longer assign `self.gpu_data`/`self.gpu_processes` from executor threads — they return lists, and the updater thread publishes them in the single `_stats_lock`-protected swap, so the lock now genuinely guards what its docstring claims. No behavior change: golden + PTY suites byte-identical, verified end-to-end with live `nvidia-smi` data through the new path.
 
 ### v1.25.1 (2026-10-16)
 - **Bounded shutdown in the C port**: quitting (`q`/Ctrl+C) while the collector was parked inside an `nvidia-smi` poll deadline blocked `stats_stop`'s `pthread_join` for the full deadline — two sequential 5s queries meant up to ~10s of frozen screen on systems with a slow or hung driver. Shutdown now mirrors the Python reference's `join(timeout=2)`: a `g_stopping` flag stops `run_cmd_capture` from spawning anything new, the in-flight child is exposed via `g_child_pid` and SIGKILLed after a 200ms grace, and the worker signals a `finished` flag on a condvar so the join wait is event-driven (200ms + 2s bound, detach as last resort). Measured with a deliberately hung `nvidia-smi`: **9.1s → 0.22s** to exit after `q`; the normal path is 20ms.

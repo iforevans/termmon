@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include <time.h>
 
-#define TERMMON_VERSION "1.25.1"
+#define TERMMON_VERSION "1.25.2"
 
 #define BAR_WIDTH 20
 #define MIN_BAR_WIDTH 5
