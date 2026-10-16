@@ -158,23 +158,17 @@ int main(int argc, char **argv)
         stats_start(&app.stats);
 
     int quit = 0;
-    double last_refresh = now_mono();
 
     while (!quit) {
         if (g_sigint)
             break;
 
-        double now = now_mono();
-
-        if (g_resized) {
-            g_resized = 0;
-            last_refresh = now;
-        }
+        /* Collection cadence is driven by the worker thread itself
+         * (stats_thread throttles on g_refresh_interval); the main loop
+         * only redraws. SIGWINCH's real job is waking getch() sooner —
+         * sync_terminal_size() re-syncs geometry every frame regardless. */
+        g_resized = 0;
         sync_terminal_size(scr);
-
-        if (now - last_refresh >= g_refresh_interval) {
-            last_refresh = now;
-        }
 
         draw(&app, scr);
 

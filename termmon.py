@@ -19,7 +19,7 @@ Features:
     - Apple Silicon GPU monitoring on macOS (utilization, power, UMA)
     - GPU process tracking (top 5 processes by memory usage)
     - Color-coded progress bars
-    - Auto-refresh every 2 seconds
+    - Auto-refresh every second (configurable via -i/--interval, cycled with r)
     - Cross-platform (Linux + macOS)
     - Instant scroll response via non-blocking stats updates
 
@@ -90,7 +90,7 @@ def apply_interval_args(argv: list) -> None:
     """Parse -i/--interval SECONDS from argv and set REFRESH_INTERVAL (clamped).
 
     Mirrors the C port's parse_args(): -i VALUE, --interval VALUE,
-    --interval=VALUE; clamped to [0.2, 60]; integer-valued input displays
+    --interval=VALUE; clamped to [0.5, 60]; integer-valued input displays
     without a decimal part.
     """
     global REFRESH_INTERVAL
@@ -930,7 +930,6 @@ class TermMon:
                 raise
             except Exception as e:
                 logger.error("Failed to collect GPU data: %s", e)
-                pass
 
             # --- Atomic swap under the lock ---
             with self._stats_lock:
@@ -1838,8 +1837,7 @@ class TermMon:
         user = str(proc.get('user', 'unknown'))[:8]
         dev = str(proc.get('dev', '0'))[:3]
         proc_type = str(proc.get('type', 'C'))[:4]
-        gpu_pct = proc.get('gpu_pct')
-        gpu_text = f"{gpu_pct:5.1f}%" if isinstance(gpu_pct, (int, float)) else "--"
+        gpu_text = "--"  # per-process GPU utilization is not queryable
         gpu_mem = f"{proc.get('mem_used', 0):.0f}M"
         cpu_text = f"{proc.get('cpu_pct', 0.0):5.1f}%"
         host_mem = f"{proc.get('host_mem', 0):.0f}M"
@@ -2029,7 +2027,7 @@ class TermMon:
         
         Keybindings:
             q/Q - Quit
-            r/R - Force refresh
+            r/R - Cycle refresh rate (0.5/1/2/5/10/30/60s)
             h/H - Show help
             ←/→ - Horizontally scroll GPU process table command column
         """
@@ -2080,7 +2078,7 @@ class TermMon:
                 else:
                     self._sync_terminal_size(stdscr)
                 
-                # Trigger stats update every 2 seconds
+                # Wake the collector thread (it self-throttles to REFRESH_INTERVAL)
                 if current_time - last_refresh >= REFRESH_INTERVAL:
                     self._stats_update_event.set()
                     last_refresh = current_time
