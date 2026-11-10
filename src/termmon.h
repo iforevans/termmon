@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include <time.h>
 
-#define TERMMON_VERSION "1.25.2"
+#define TERMMON_VERSION "1.26.0"
 
 #define BAR_WIDTH 20
 #define MIN_BAR_WIDTH 5
@@ -20,6 +20,7 @@ extern double g_refresh_interval;
 #define MAX_GPU_PROCS 5
 #define MAX_CORES 256
 #define MAX_GPUS 8
+#define MAX_CORE_COLS 8
 
 #define COLOR_TITLE 1
 #define COLOR_MEMORY 2
@@ -125,6 +126,8 @@ typedef struct {
     double total;
 } MemSegs;
 MemSegs mem_segments(const SysData *s);
+int cpu_core_columns(int content_width, int label_width, int pct_len,
+                     int gap_width, int core_count, int avail_rows);
 int proc_command(char *dst, size_t cap, const GpuProc *p);
 int gpu_process_fixed_prefix(char *dst, size_t cap, const GpuProc *p);
 int gpu_process_header(char *dst, size_t cap);

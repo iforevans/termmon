@@ -72,7 +72,7 @@ _SYSTEM = platform.system()  # 'Linux' or 'Darwin'
 _IS_MACOS = _SYSTEM == "Darwin"
 _IS_LINUX = _SYSTEM == "Linux"
 
-__version__ = "1.25.2"
+__version__ = "1.26.0"
 __author__ = "Ifor Evans"
 
 
@@ -84,6 +84,7 @@ MIN_BOX_WIDTH = 24     # Below this the terminal is too small to render anything
 REFRESH_INTERVAL = 1   # Seconds between auto-refreshes
 REFRESH_INTERVAL_MIN = 0.5
 REFRESH_INTERVAL_MAX = 60.0
+MAX_CORE_COLS = 8      # Never pack per-core rows into more columns than this
 
 
 def apply_interval_args(argv: list) -> None:
@@ -154,6 +155,35 @@ GPU_COMPUTE_QUERY = "pid,process_name,used_gpu_memory"
 
 # Maximum GPU processes to display
 MAX_GPU_PROCS = 5
+
+
+def cpu_core_columns(content_width: int, label_width: int, pct_len: int,
+                     gap_width: int, core_count: int, avail_rows: int) -> int:
+    """Column count for the per-core grid. The grid splits cores column-major
+    (column c holds cores [c*rows, (c+1)*rows)), so any row the height budget
+    clips hides one tail slice per column — on a 2-socket box (80 threads,
+    3 columns, ~17 rows) that silently dropped cores 17-26, 44-53, 71-79.
+    So: start from what the width allows (2 columns if they fit), then add
+    columns while the rows do not fit the height budget and the width still
+    fits another cell. First pass keeps the normal cell (full "Core 79:"
+    label + a usable bar + percentage); if the rows still do not fit, two
+    slimmer passes follow, matching the two degrade stages core_cell applies
+    to tight cells: bare "79:" label (4) with the decimal percentage, then
+    — only as a last resort — an integer percentage (" 13%", 5). Mirrors
+    the C cpu_core_columns() in layout.c.
+    """
+    full_cell = label_width + MIN_BAR_WIDTH + pct_len
+    slim_label = min(label_width, 4)
+    slim_cell = slim_label + MIN_BAR_WIDTH + pct_len
+    int_cell = slim_label + MIN_BAR_WIDTH + 5  # " %3.0f%%" => 5
+    n_cols = 2 if content_width >= full_cell * 2 + gap_width else 1
+    avail_rows = max(avail_rows, 1)
+    for cell in (full_cell, slim_cell, int_cell):
+        while (n_cols < MAX_CORE_COLS
+               and (core_count + n_cols - 1) // n_cols > avail_rows
+               and content_width >= cell * (n_cols + 1) + gap_width * n_cols):
+            n_cols += 1
+    return n_cols
 
 
 class TermMon:
@@ -1502,7 +1532,8 @@ class TermMon:
     
     def _draw_cpu_section(self, stdscr, y: int, x: int, height: int, snapshot: Dict[str, Any], bw: int, gap: int = 2) -> int:
         """
-        Draw the CPU monitoring section (overall + per-core in up to 3 columns).
+        Draw the CPU monitoring section (overall + per-core in up to
+        MAX_CORE_COLS columns).
 
         Args:
             stdscr: Curses window
@@ -1554,17 +1585,12 @@ class TermMon:
         pct_len = len(f" {100.0:5.1f}%")
 
         # A cell needs label + a usable bar + percentage. Pack cores into as
-        # many columns as the width allows; when the two-column rows would not
-        # fit the height we were given, go to three (shorter) columns so more
-        # cores stay visible on short terminals.
-        min_cell = label_width + MIN_BAR_WIDTH + pct_len
-        n_cols = 1
-        if content_width >= min_cell * 2 + gap_width:
-            n_cols = 2
-        if (n_cols == 2
-                and content_width >= min_cell * 3 + 2 * gap_width
-                and (core_count + 1) // 2 > (height - 3) - y):
-            n_cols = 3
+        # many columns as the width allows; when the current columns' rows
+        # would not fit the height we were given, add (shorter) columns so no
+        # core row is ever clipped out of existence — see cpu_core_columns().
+        avail_rows = (height - 3) - y
+        n_cols = cpu_core_columns(content_width, label_width, pct_len,
+                                  gap_width, core_count, avail_rows)
 
         rows = (core_count + n_cols - 1) // n_cols
         rem = content_width - gap_width * (n_cols - 1)
@@ -1595,7 +1621,10 @@ class TermMon:
             if width < len(label) + MIN_BAR_WIDTH + len(pct_text):
                 label = f"{core_id}:".ljust(min(label_width, 4))
             if width < len(label) + MIN_BAR_WIDTH + len(pct_text):
-                pct_text = ""
+                # Tighter still: integer percentage before no percentage at all.
+                pct_text = f" {core_pct:3.0f}%"
+                if width < len(label) + MIN_BAR_WIDTH + len(pct_text):
+                    pct_text = ""
             bar_width = max(1, width - len(label) - len(pct_text))
             bar, filled = bar_parts(core_pct, bar_width)
             text = label + bar + pct_text

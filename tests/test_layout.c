@@ -233,6 +233,32 @@ static void test_next_refresh_interval(void)
     CHECK(next_refresh_interval(59.9) == 60.0);
 }
 
+static void test_cpu_core_columns(void)
+{
+    /* 80 threads (2x Xeon), 120-col box: content 116, full cell 9+5+7=21 */
+    CHECK(cpu_core_columns(116, 9, 7, 2, 80, 17) == 5); /* user report: 3-col
+        * hid cores 17-26/44-53/71-79; 5 cols x 16 rows shows all 80 */
+    CHECK(cpu_core_columns(116, 9, 7, 2, 80, 25) == 4); /* 20 rows fit 25 */
+    CHECK(cpu_core_columns(116, 9, 7, 2, 80, 40) == 2); /* roomy: wide bars */
+    CHECK(cpu_core_columns(116, 9, 7, 2, 80, 10) == 7); /* full tier caps at
+        * 5 cols (6x21+10=136>116); slim (16) adds a 6th, int-pct (14) a 7th */
+    CHECK(cpu_core_columns(116, 9, 7, 2, 80, 1) == 7);  /* best effort      */
+    CHECK(cpu_core_columns(116, 9, 7, 2, 80, 13) == 7); /* live 132x44 w/ 2
+                                                           GPUs: all 80 fit  */
+
+    /* 16-core regression: old ladder was 2 cols, 3 only under pressure */
+    CHECK(cpu_core_columns(106, 9, 7, 2, 16, 8) == 2);  /* 8 rows fit      */
+    CHECK(cpu_core_columns(106, 9, 7, 2, 16, 6) == 3);  /* v1.25.0 110x34  */
+    CHECK(cpu_core_columns(106, 9, 7, 2, 16, 5) == 4);  /* 3 cols would
+                                                           clip 4 cores    */
+
+    /* too narrow for two cells even int-pct (2x14+2=30 > 24): single column */
+    CHECK(cpu_core_columns(24, 9, 7, 2, 16, 4) == 1);
+
+    /* column cap protects the draw arrays regardless of width/count */
+    CHECK(cpu_core_columns(170, 9, 7, 2, 256, 1) == MAX_CORE_COLS);
+}
+
 int main(void)
 {
     test_utf8_helpers();
@@ -240,6 +266,7 @@ int main(void)
     test_bar_filled();
     test_stacked_widths();
     test_mem_segments();
+    test_cpu_core_columns();
     test_proc_command();
     test_process_table();
     test_fmt_interval();

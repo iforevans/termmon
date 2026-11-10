@@ -432,8 +432,12 @@ static void core_cell(int core_id, double core_pct, int width,
         u8_fit(label, sizeof label, label,
                label_width < 4 ? label_width : 4);
     }
-    if (width < (int)strlen(label) + MIN_BAR_WIDTH + (int)strlen(pct_text))
-        pct_text[0] = '\0';
+    if (width < (int)strlen(label) + MIN_BAR_WIDTH + (int)strlen(pct_text)) {
+        /* Tighter still: integer percentage before no percentage at all. */
+        snprintf(pct_text, sizeof pct_text, " %3.0f%%", core_pct);
+        if (width < (int)strlen(label) + MIN_BAR_WIDTH + (int)strlen(pct_text))
+            pct_text[0] = '\0';
+    }
 
     int bar_w = width - (int)strlen(label) - (int)strlen(pct_text);
     if (bar_w < 1)
@@ -486,21 +490,16 @@ static int draw_cpu_section(App *app, WINDOW *scr, int y, int x, int height,
     int label_width = (int)strlen(probe) + 1;
     int pct_len = (int)strlen(" 100.0%");
 
-    int min_cell = label_width + MIN_BAR_WIDTH + pct_len;
     /* A cell needs label + a usable bar + percentage. Pack cores into as many
-     * columns as the width allows; when the two-column rows would not fit the
-     * height we were given, go to three (shorter) columns so more cores stay
-     * visible on short terminals. */
-    int n_cols = 1;
-    if (content_width >= min_cell * 2 + gap_width)
-        n_cols = 2;
-    if (n_cols == 2 &&
-        content_width >= min_cell * 3 + 2 * gap_width &&
-        (core_count + 1) / 2 > (height - 3) - y)
-        n_cols = 3;
+     * columns as the width allows; when the current columns' rows would not
+     * fit the height we were given, add (shorter) columns so no core row is
+     * ever clipped out of existence — see cpu_core_columns(). */
+    int avail_rows = (height - 3) - y;
+    int n_cols = cpu_core_columns(content_width, label_width, pct_len,
+                                  gap_width, core_count, avail_rows);
 
     int rows = (core_count + n_cols - 1) / n_cols;
-    int col_w[3], col_x[3];
+    int col_w[MAX_CORE_COLS], col_x[MAX_CORE_COLS];
     int rem = content_width - gap_width * (n_cols - 1);
     for (int c = 0; c < n_cols; c++)
         col_w[c] = rem / n_cols;
@@ -518,8 +517,8 @@ static int draw_cpu_section(App *app, WINDOW *scr, int y, int x, int height,
         if (y >= height - 3)
             break;
         char cell[BUF];
-        int bar_start[3] = { 0, 0, 0 };
-        int filled[3] = { 0, 0, 0 };
+        int bar_start[MAX_CORE_COLS] = { 0 };
+        int filled[MAX_CORE_COLS] = { 0 };
         size_t pos = 0;
         pos += (size_t)snprintf(line + pos, sizeof line - pos, "│ ");
         for (int c = 0; c < n_cols; c++) {

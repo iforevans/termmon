@@ -7,7 +7,7 @@ Originally created to solve the problem of monitoring CPU/system RAM/swap and GP
 ## Features
 
 - **System Memory**: One stacked RAM bar with non-overlapping Used / Cache / Free segments (GB legend inline), so the ~90 GB hiding in buffers/file-cache is visible; Total + the kernel's Available shown separately, plus a swap bar
-- **CPU Usage**: Overall and per-core real-time utilization
+- **CPU Usage**: Overall and per-core real-time utilization — cores pack into 1–8 columns sized by width AND height so every core stays visible (verified on a 2-socket 80-thread box)
 - **CPU Temperature**: Package temperature (°C) via psutil sensor detection
 - **NVIDIA GPU Monitoring**: VRAM usage, GPU utilization, temperature, power draw
 - **GPU Process Tracking**: Top 5 active GPU compute processes (nvtop-style)
@@ -285,6 +285,9 @@ python3 tests/test_pty_layout.py --show 80
 The C golden harness feeds both renderers the same fixture (`TERMMON_FIXTURE=…`) and diffs the pyte-parsed screen row-for-row — the strongest guarantee the port is behaviourally identical. The mock suite asserts no write lands outside the terminal grid and that box edges stay consistent. The PTY suite is the one that catches resize bugs — a mock harness never fires `SIGWINCH`, so it cannot detect stale curses geometry.
 
 ## Development Timeline
+
+### v1.26.0 (2026-11-10)
+- **No more invisible cores on many-thread machines**: the per-core grid splits cores *column-major* (column c holds cores `[c*rows, (c+1)*rows)`), so when the height budget ran out mid-grid it silently hid one tail slice per column — on a new 2-socket box (80 threads) the 3-column mode dropped cores 17–26, 44–53 and 71–79 entirely. Column count is now chosen from *both* dimensions by a pure helper (`cpu_core_columns()` in layout.c, mirrored in the Python oracle): start from what the width allows, then add columns while the rows don't fit the height budget and another cell still fits — full cells first ("Core 79:" + ≥5-block bar + decimal %), then slim cells (bare "79:" label), then last-resort cells with an integer percentage (the existing per-cell degrade ladder already trimmed labels/percentages *within* a cell; the column count now follows the same tiers). Ladder generalized 1/2/3 → 1–8 columns; wide roomy terminals still render 2 columns with 20-block bars exactly as before. Verified live on the 80-thread / 2×A6000 machine: 132×44 shows all 80 cores; the old layout showed 39. Golden C-vs-Python byte-identical at all nine sizes plus new 80-core parity checks (9 sizes); new unit tests cover the tier math.
 
 ### v1.25.2 (2026-10-16)
 - **Dead code and stale docs removed** (code-review follow-up): the C main loop's vestigial refresh-interval block is gone — cadence lives in the collector thread, and the block only re-stamped a timestamp nothing read; the Python reference lost its unreachable `gpu_pct` branch (the process table's GPU column is always `--`, matching the C port) plus four stale docstrings (2s refresh, 0.2s clamp floor, "Force refresh"). No behavior change.
