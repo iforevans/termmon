@@ -76,12 +76,12 @@ Simply run `termmon` and watch your system resources in real-time.
 
 ## Display Layout
 
-The layout is **fully responsive** — it reflows to whatever size your terminal is, nvtop-style. All three mockups below are real rendered output.
+The layout is **fully responsive** — it reflows to whatever size your terminal is, nvtop-style. All four mockups below are real rendered output.
 
 At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, cores run in two columns, and Util/VRAM take their own rows:
 
 ```
- termmon 1.25.2 - System Monitor | 14:32:07 | q:quit r:rate h:help
+ termmon 1.26.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
 
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                              │
@@ -126,7 +126,7 @@ At 80 columns, the RAM bar is stacked (Used/Cache/Free) with the legend inline, 
 Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GPU title drops segments, and the footer compacts — no wrapping, no overwritten content:
 
 ```
- termmon 1.25.2 | 14:32:07
+ termmon 1.26.0 | 14:32:07
 
  ┌──────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                │
@@ -171,7 +171,7 @@ Shrink to 50 columns and the box narrows with the terminal, bars shorten, the GP
 On short terminals (Termius on an iPad, 34 rows here) the blank rows between sections disappear and the cores pack into three narrower columns, so every core stays visible while the GPU process table keeps its space:
 
 ```
- termmon 1.25.2 - System Monitor | 14:32:07 | q:quit r:rate h:help
+ termmon 1.26.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
 
  ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
  │ SYSTEM MEMORY                                                                                            │
@@ -203,6 +203,55 @@ On short terminals (Termius on an iPad, 34 rows here) the blank rows between sec
  │──────────────────────────────────────────────────────────────────────────────────────────────────────────│
  │ 54321   iforevan 0   C       --   39506M  12.0%    7768M llama-server --host 127.0.0.1 --port 8080 -c 16 │
  └──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ Refresh: 1s | q:quit r:rate h:help ←/→:process scroll
+```
+
+On a many-thread machine — here 2 sockets × 20 cores / 40 threads = 80 logical CPUs at 120 columns — the cores pack into as many columns as fit (five here), so every thread stays visible instead of tails of columns going missing:
+
+```
+ termmon 1.26.0 - System Monitor | 14:32:07 | q:quit r:rate h:help
+
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ SYSTEM MEMORY                                                                                                      │
+ │────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+ │ Mem: ████████████████████ Used:  12.5 GB | Cache:   2.4 GB | Free:   0.5 GB                                        │
+ │ Total:   15.4 GB | Available:    2.9 GB                                                                            │
+ │ Swap:████████████░░░░░░░░  2.7/ 4.3GB  62.5%                                                                       │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ CPU: 80 Cores | Usage: 23.4% | Temp: 46°C                                                                          │
+ │────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+ │ Core 0:  ░░░░░   0.0%  Core 16: █░░░░  12.0%  Core 32: █░░░░  24.0%  Core 48: █░░░░  36.0%  Core 64: ██░░░░  48.0% │
+ │ Core 1:  █░░░░   7.0%  Core 17: █░░░░  19.0%  Core 33: █░░░░  31.0%  Core 49: ██░░░  43.0%  Core 65: ███░░░  55.0% │
+ │ Core 2:  █░░░░  14.0%  Core 18: █░░░░  26.0%  Core 34: █░░░░  38.0%  Core 50: ██░░░  50.0%  Core 66: ███░░░  62.0% │
+ │ Core 3:  █░░░░  21.0%  Core 19: █░░░░  33.0%  Core 35: ██░░░  45.0%  Core 51: ██░░░  57.0%  Core 67: ████░░  69.0% │
+ │ Core 4:  █░░░░  28.0%  Core 20: ██░░░  40.0%  Core 36: ██░░░  52.0%  Core 52: ███░░  64.0%  Core 68: ████░░  76.0% │
+ │ Core 5:  █░░░░  35.0%  Core 21: ██░░░  47.0%  Core 37: ██░░░  59.0%  Core 53: ███░░  71.0%  Core 69: ████░░  83.0% │
+ │ Core 6:  ██░░░  42.0%  Core 22: ██░░░  54.0%  Core 38: ███░░  66.0%  Core 54: ███░░  78.0%  Core 70: █████░  90.0% │
+ │ Core 7:  ██░░░  49.0%  Core 23: ███░░  61.0%  Core 39: ███░░  73.0%  Core 55: ████░  85.0%  Core 71: █████░  97.0% │
+ │ Core 8:  ██░░░  56.0%  Core 24: ███░░  68.0%  Core 40: ████░  80.0%  Core 56: ████░  92.0%  Core 72: █░░░░░   4.0% │
+ │ Core 9:  ███░░  63.0%  Core 25: ███░░  75.0%  Core 41: ████░  87.0%  Core 57: ████░  99.0%  Core 73: █░░░░░  11.0% │
+ │ Core 10: ███░░  70.0%  Core 26: ████░  82.0%  Core 42: ████░  94.0%  Core 58: █░░░░   6.0%  Core 74: █░░░░░  18.0% │
+ │ Core 11: ███░░  77.0%  Core 27: ████░  89.0%  Core 43: █░░░░   1.0%  Core 59: █░░░░  13.0%  Core 75: █░░░░░  25.0% │
+ │ Core 12: ████░  84.0%  Core 28: ████░  96.0%  Core 44: █░░░░   8.0%  Core 60: █░░░░  20.0%  Core 76: █░░░░░  32.0% │
+ │ Core 13: ████░  91.0%  Core 29: █░░░░   3.0%  Core 45: █░░░░  15.0%  Core 61: █░░░░  27.0%  Core 77: ██░░░░  39.0% │
+ │ Core 14: ████░  98.0%  Core 30: █░░░░  10.0%  Core 46: █░░░░  22.0%  Core 62: █░░░░  34.0%  Core 78: ██░░░░  46.0% │
+ │ Core 15: █░░░░   5.0%  Core 31: █░░░░  17.0%  Core 47: █░░░░  29.0%  Core 63: ██░░░  41.0%  Core 79: ███░░░  53.0% │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ GPUs                                                                                                               │
+ │────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+ │ GPU 0: NVIDIA RTX A6000 | Util: 80.0% | Temp: 59°C | Power: 110.0W                                                 │
+ │ Util:████████████████░░░░   80.0%  VRAM:█████████████████░░░  42.8GB/48.0G  89.1%                                  │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ GPU PROCESSES  ←/→ scroll 0                                                                                        │
+ │────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+ │ PID     USER     DEV TYPE   GPU  GPU MEM    CPU HOST MEM Command                                                   │
+ │────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+ │ 54321   iforevan 0   C       --   39506M  12.0%    7768M llama-server --host 127.0.0.1 --port 8080 -c 163840 -ngl  │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
  Refresh: 1s | q:quit r:rate h:help ←/→:process scroll
 ```
@@ -247,7 +296,7 @@ Below ~24 columns termmon shows a "Terminal too small" notice rather than render
 - **Memory Stats**: Linux reads `/proc/meminfo` directly — `Cache = Buffers + Cached + SReclaimable`, `Used = Total − Free − Cache` (so Used + Cache + Free == Total); `MemAvailable` is shown beside the bar, never as a segment. macOS reads `hw.memsize` + `host_statistics64` — `Used = active + wired`, `Free = free_count`, cache absorbs the remainder (mirrors psutil's macOS accounting, verified against it). Other platforms use psutil (its Linux `.cached` already folds in SReclaimable, so mixing both would double-count)
 - **Process Info**: Linux parses `/proc/[pid]/{stat,status,cmdline}` with jiffies-delta CPU%; macOS uses `libproc`/`proc_pidinfo` with mach-tick delta CPU% (top-N by host RSS as the UMA proxy for GPU activity); Python uses psutil.Process()
 - **Refresh Rate**: 1 second by default — launch with `-i`/`--interval SECONDS` (0.5–60), or cycle presets (0.5/1/2/5/10/30/60s) live with the `r` key
-- **Layout**: Adaptive box width (`min(120, terminal_width - 2)`), computed bar widths, and per-section two-column/single-column breakpoints. All drawing goes through a single bounds-clipping `_safe_addstr()` helper
+- **Layout**: Adaptive box width (`min(120, terminal_width - 2)`), computed bar widths, and per-section two-column/single-column breakpoints. The per-core grid packs into 1–8 columns chosen from *both* width and height (full `Core 79:` cells, then bare-label slim cells, then integer-percentage cells as a last resort) so no core is ever hidden when the grid outgrows the height budget. All drawing goes through a single bounds-clipping `_safe_addstr()` helper
 - **Resize handling**: `SIGWINCH` triggers a kernel `TIOCGWINSZ` query (not the stale curses `getmaxyx()` cache), then `resizeterm()` + `clear()`
 
 ## Testing
